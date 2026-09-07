@@ -292,10 +292,10 @@ in the child."
                                   :ignore-error-status t))))
           (unless (zerop code)
             (child-failure code (read-child-status status)))))))
-  (unless (probe-file (executable-path spec))
+  (unless (probe-file (core-path spec))
     (barf "Child Lisp reported success but ~a does not exist."
-          (executable-path spec)))
-  (executable-path spec))
+          (uiop:native-namestring (core-path spec))))
+  (core-path spec))
 
 ;;; ------------------------------------------------------------------
 ;;; staging: build beside the target, then move into place
@@ -392,20 +392,24 @@ they may still be findable from the child's own configuration."
         when d maximize d))
 
 (defun current-image (system spec)
-  "Pathname of a previously built executable we can reuse, or NIL."
+  "Pathname of a previously built core we can reuse, or NIL.
+
+The core rather than the executable: the executable is a copy of the SBCL
+runtime now, which is the same file every time and says nothing about whether
+this system has been rebuilt."
   (unless *force-image-dump*
     (let* ((previous (uiop:subpathname (spec-final-root spec)
-                                       (format nil "Contents/MacOS/~a"
-                                               (spec-executable-name spec))))
+                                       (format nil "Contents/Resources/~a"
+                                               +core-name+)))
            (stamp (uiop:safe-file-write-date previous)))
       (when (and stamp (> stamp (newest-input-date system)))
         previous))))
 
 (defun reuse-image (spec previous)
-  (let ((exe (executable-path spec)))
-    (ensure-directories-exist exe)
+  (let ((core (core-path spec)))
+    (ensure-directories-exist core)
     (run (list "/bin/cp" "-p" (uiop:native-namestring previous)
-               (uiop:native-namestring exe)))
+               (uiop:native-namestring core)))
     ;; the manifest was written by the child alongside the image it describes
     (let ((old-manifest (uiop:subpathname (spec-final-root spec)
                                           "Contents/Resources/foreign-libraries.sexp")))
@@ -436,7 +440,7 @@ they may still be findable from the child's own configuration."
                          (s asdf::macos-app-system))
   ;; Runs in the child. Everything after DUMP-IMAGE is unreachable.
   (let* ((spec (system-app-spec s))
-         (out (executable-path spec)))
+         (out (core-path spec)))
     (ensure-directories-exist out)
     (write-foreign-manifest spec (spec-foreign-libraries spec))
     ;; Resolve the entry point NOW. Deferring it to launch time means a typo
@@ -455,10 +459,60 @@ they may still be findable from the child's own configuration."
     ;; returning toplevel drops into the REPL instead of exiting.
     (setf uiop:*image-entry-point* '%app-toplevel
           uiop:*lisp-interaction* nil)
-    (apply #'uiop:dump-image out
-           :executable t
+    ;; A CORE, not an executable, and this is the decision the whole design
+    ;; turns on.  SAVE-LISP-AND-DIE :EXECUTABLE T appends the core to the SBCL
+    ;; runtime's Mach-O -- past the end of __LINKEDIT and past the code
+    ;; signature -- and codesign then refuses the file outright:
+    ;;
+    ;;   main executable failed strict validation
+    ;;
+    ;; for a Developer ID as much as for ad hoc, and whether or not the old
+    ;; signature is stripped first.  Measured: __LINKEDIT and the signature both
+    ;; end at byte 410,952 of a 47,782,952-byte image.  An executable image
+    ;; therefore cannot be signed, cannot be notarised, and cannot be shipped.
+    ;;
+    ;; Dumped as a core it is an ordinary data file, sealed as a resource, and
+    ;; the runtime beside it is a clean signable Mach-O.  INSTALL-RUNTIME puts
+    ;; the two together.
+    ;;
+    ;; SAVE-LISP-AND-DIE rather than UIOP:DUMP-IMAGE, for :TOPLEVEL.  UIOP passes
+    ;; a toplevel only when dumping an executable; without one the restored core
+    ;; runs SBCL's own toplevel first, which prints the banner, parses argv as
+    ;; SBCL options, and dies on the application's own arguments before the
+    ;; entry point ever runs.
+    (apply #'sb-ext:save-lisp-and-die out
+           :executable nil
+           :toplevel #'uiop:restore-image
            (when (spec-compression spec)
              (list :compression (spec-compression spec))))))
+
+(defun install-runtime (spec)
+  "Put the SBCL runtime in MacOS/ and link the core beside it.
+
+The runtime is copied rather than dumped into, so it stays exactly the Mach-O
+the SBCL build produced -- which is a file codesign accepts.  The link is what
+lets the runtime find its core with no arguments; see CORE-LINK-PATH."
+  (let ((exe (executable-path spec))
+        (link (core-link-path spec)))
+    (ensure-directories-exist exe)
+    (unless (probe-file (core-path spec))
+      (barf "No core at ~a to build a runnable bundle around."
+            (uiop:native-namestring (core-path spec))))
+    (run (list "/bin/cp" "-p"
+               (uiop:native-namestring sb-ext:*runtime-pathname*)
+               (uiop:native-namestring exe)))
+    ;; -p preserved the runtime's mode, which is read-only in a Homebrew
+    ;; install; the copy has to be writable for codesign to sign it in place.
+    (run (list "/bin/chmod" "755" (uiop:native-namestring exe)))
+    ;; DELETE-FILE unconditionally, errors ignored: a DANGLING symlink is
+    ;; invisible to PROBE-FILE but still occupies the name, and ln would fail on
+    ;; it.  A rebuild into a reused staging directory is exactly when that
+    ;; happens.
+    (ignore-errors (delete-file link))
+    (run (list "/bin/ln" "-s"
+               (format nil "../Resources/~a" +core-name+)
+               (uiop:native-namestring link)))
+    exe))
 
 (defmethod asdf:perform ((o asdf::macos-app-op)
                          (s asdf::macos-app-system))
@@ -482,6 +536,7 @@ they may still be findable from the child's own configuration."
            (if previous
                (reuse-image spec previous)
                (dump-in-child s spec))
+           (install-runtime spec)
            (relocate-foreign-libraries spec)
            (sign-bundle spec)
            (commit-bundle staging final)

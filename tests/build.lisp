@@ -112,6 +112,38 @@ scratch directory so the suite never touches the real ~/Library/Logs."
       (is (probe-file (uiop:subpathname bundle "Contents/Frameworks/")))
       (is (null (staging-leftovers dir))))))
 
+(deftest the-core-is-a-resource-and-the-executable-is-the-runtime
+  "The layout that makes a bundle signable.
+
+An executable image cannot be codesigned: SAVE-LISP-AND-DIE :EXECUTABLE T
+appends the core past the end of the Mach-O and past the code signature, and
+codesign refuses the file with `main executable failed strict validation'.  So
+the core is a sealed resource, the executable is a copy of the SBCL runtime --
+an ordinary signable binary -- and a symlink in MacOS/ is what lets the runtime
+find its core with no arguments.
+
+All three are asserted, because each is load-bearing and any one alone looks
+arbitrary."
+  (with-fixture (dir)
+    (let* ((bundle (build-fixture))
+           (core (uiop:subpathname bundle "Contents/Resources/sbcl.core"))
+           (link (uiop:subpathname bundle "Contents/MacOS/sbcl.core"))
+           (exe (uiop:subpathname bundle "Contents/MacOS/fixture")))
+      (is (probe-file core))
+      (is (asdf-macos-app::symlink-p link))
+      ;; RELATIVE.  An absolute link points into the staging directory, which is
+      ;; deleted the moment the bundle is committed.
+      (is (string= "../Resources/sbcl.core"
+                   (sb-posix:readlink (uiop:native-namestring link))))
+      (is (probe-file exe))
+      ;; The executable is the runtime, not an image: a fraction of the core's
+      ;; size rather than a shade larger than it.
+      (let ((exe-size (with-open-file (in exe :element-type '(unsigned-byte 8))
+                        (file-length in)))
+            (core-size (with-open-file (in core :element-type '(unsigned-byte 8))
+                         (file-length in))))
+        (is (< exe-size (floor core-size 10)))))))
+
 (deftest built-plist-is-well-formed
   (with-fixture (dir)
     (let* ((bundle (build-fixture))

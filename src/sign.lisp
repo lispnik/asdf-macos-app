@@ -62,9 +62,16 @@ Globbing Frameworks/*.dylib is not enough: .framework and .xpc bundles, helper
 executables beside the main one, and login items all count as nested code."
   (let* ((main (executable-path spec))
          (main-name (file-namestring main))
+         ;; The core link is not nested code.  It is a symlink to a resource,
+         ;; and codesign seals it as one when the bundle is signed; handed to
+         ;; codesign on its own it is neither a Mach-O nor a bundle and the
+         ;; signature fails.
+         (skip (list main-name +core-name+))
          (paths (append (collect-nested-code (frameworks-dir spec))
-                        (remove main-name (uiop:directory-files (macos-dir spec))
-                                :key #'file-namestring :test #'equal)
+                        (remove-if (lambda (path)
+                                     (member (file-namestring path) skip
+                                             :test #'equal))
+                                   (uiop:directory-files (macos-dir spec)))
                         (collect-nested-code
                          (uiop:subpathname (contents-dir spec) "Library/")))))
     ;; deepest first, so an enclosing bundle is signed after its contents

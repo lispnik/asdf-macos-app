@@ -54,6 +54,31 @@ notarytool. Reduce to the leading numeric components."
 (defun executable-path (spec)
   (uiop:subpathname (macos-dir spec) (spec-executable-name spec)))
 
+(defparameter +core-name+ "sbcl.core"
+  "What the core must be called for the runtime to find it unaided.
+
+Not a choice.  With no --core argument and no SBCL_HOME -- which is what
+LaunchServices gives a double-clicked application -- the runtime looks for a
+core of exactly this name beside its own executable.  Rename it and the bundle
+starts SBCL's REPL into a log file instead of running the application.")
+
+(defun core-path (spec)
+  "Where the core actually lives: a sealed resource.
+
+Contents/Resources/, and NOT Contents/MacOS/, because codesign treats every
+file in MacOS/ as nested code and refuses a bundle containing one it cannot
+sign: `code object is not signed at all / In subcomponent: .../MacOS/sbcl.core'.
+That holds however the file is permissioned."
+  (uiop:subpathname (resources-dir spec) +core-name+))
+
+(defun core-link-path (spec)
+  "The symbolic link in MacOS/ that points at the core in Resources/.
+
+This is what reconciles the two constraints above: the runtime finds a core
+named sbcl.core beside itself, and codesign sees a symlink -- which it seals as
+an ordinary resource rather than trying to sign as code."
+  (uiop:subpathname (macos-dir spec) +core-name+))
+
 (defun info-plist-path (spec)
   (uiop:subpathname (contents-dir spec) "Info.plist"))
 

@@ -41,8 +41,40 @@ That registry travels inside the bootstrap file rather than the environment,
 which has no length limit. The child does *not* get `--no-userinit`, so an
 ocicl-style registry set up in your init file still applies on top.
 
-**The executable is never rewritten.** SBCL appends the core image to the
-Mach-O file; `install_name_tool` is not guaranteed to leave that intact. So no
+**The core is a resource, not an executable.** `save-lisp-and-die :executable t`
+appends the core to the SBCL runtime's Mach-O — *past* the end of `__LINKEDIT`
+and past the code signature — and codesign then refuses the file outright:
+
+```
+$ codesign --force --sign - some-dumped-image
+some-dumped-image: main executable failed strict validation
+```
+
+Measured: `__LINKEDIT` and the signature both end at byte 410,952 of a
+47,782,952-byte image. That is 47MB of trailing data no signature can cover, and
+it holds for a Developer ID as much as for ad hoc, and whether or not the old
+signature is stripped first. An executable image cannot be signed, so it cannot
+be notarised, so it cannot be shipped.
+
+So the bundle holds three things instead of one:
+
+- `Contents/Resources/sbcl.core` — the dumped core, sealed as an ordinary
+  resource. Tampering with it fails `codesign --verify`.
+- `Contents/MacOS/<exe>` — a copy of the SBCL runtime, which is a clean Mach-O
+  that signs and verifies.
+- `Contents/MacOS/sbcl.core` — a relative symlink to the core.
+
+The symlink is what reconciles two constraints that otherwise conflict. With no
+`--core` argument and no `SBCL_HOME` — which is exactly what LaunchServices gives
+a double-clicked app — the runtime looks for a core of that name *beside its own
+executable*. But the core cannot actually live in `MacOS/`: codesign treats every
+file there as nested code and refuses the bundle (`code object is not signed at
+all / In subcomponent: …/MacOS/sbcl.core`), whatever its permissions. A symlink
+is found by the runtime and sealed as a resource by codesign.
+
+No C launcher, and so still no C toolchain in the build.
+
+**The executable is never rewritten.** `install_name_tool` is not run on it. So no
 `-add_rpath` on the executable. Instead, every dylib is copied into
 `Contents/Frameworks`, its *own* dependencies are rewritten to
 `@loader_path/<name>`, and at startup the runtime pushes
@@ -55,7 +87,9 @@ resolves libraries to absolute paths inside the bundle.
 Editor.app/Contents/
   Info.plist
   PkgInfo                     "APPL????"
-  MacOS/editor                the dumped SBCL executable
+  MacOS/editor                a copy of the SBCL runtime
+  MacOS/sbcl.core             -> ../Resources/sbcl.core
+  Resources/sbcl.core         the dumped core, sealed by the signature
   Resources/editor.icns
   Resources/entitlements.plist
   Resources/foreign-libraries.sexp   manifest written by the child
@@ -188,13 +222,18 @@ parsers are covered against captured `otool` output.
 
 ## Known limits and things to check
 
-- **SBCL core plus code signature.** Signing appends to the Mach-O after the
-  core has already been appended by `save-lisp-and-die`. This works on current
-  SBCL and macOS, but it is the most fragile part of the pipeline. Always
-  launch the signed bundle before shipping it; `verify-signature` catches the
-  file-level failure but not a runtime one. If it ever breaks, the escape hatch
-  is a small C launcher in `Contents/MacOS` that `exec`s the SBCL runtime with
-  `--core Contents/Resources/app.core`.
+- **The banner.** A separate core prints SBCL's startup banner unless
+  `--noinform` is passed, and LaunchServices passes nothing. It is printed by
+  the C runtime before Lisp starts, so no `:toplevel` can suppress it; only an
+  embedded executable core does, and that is the thing that cannot be signed.
+  For a bundle it goes to the log nobody reads. This is the one thing the old
+  layout did better.
+- **The hardened runtime needs `disable-library-validation`.** A signed runtime
+  refuses to load Homebrew dylibs — `libzstd` for a compression-enabled SBCL —
+  on a Team ID mismatch. `:entitlements :sbcl-default` already carries that key;
+  a bundle signed without it fails at launch rather than at build.
+- **Always launch the signed bundle before shipping it.** `verify-signature`
+  catches a file-level failure, not a runtime one.
 - **Universal binaries.** Not supported. `lipo` cannot merge two SBCL cores.
   Build arm64 and x86_64 bundles separately.
 - **Non-CFFI foreign libraries.** Only CFFI's `list-foreign-libraries` is
