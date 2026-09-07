@@ -2,7 +2,7 @@
 
 (defsystem "asdf-macos-app"
   :description "ASDF extension that builds macOS .app bundles from SBCL images."
-  :author "Matthew"
+  :author "Matthew Kennedy <burnsidemk@gmail.com>"
   :license "MIT"
   :version "0.1.0"
   :depends-on (#+sbcl (:require "sb-posix"))
