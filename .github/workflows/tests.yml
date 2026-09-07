@@ -1,0 +1,32 @@
+name: tests
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install SBCL (macOS)
+        if: runner.os == 'macOS'
+        run: brew install sbcl
+
+      - name: Install SBCL (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y sbcl
+
+      # The Linux leg exercises layout, plists, staging, freshness, the child
+      # protocol and the parsers. The macOS leg is the one that runs plutil,
+      # codesign and verify against a real SBCL image.
+      - name: Run tests
+        env:
+          CL_SOURCE_REGISTRY: ${{ github.workspace }}//
+        run: |
+          sbcl --non-interactive \
+               --eval '(require :asdf)' \
+               --eval '(asdf:test-system "asdf-macos-app")'
