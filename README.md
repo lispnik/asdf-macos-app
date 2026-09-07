@@ -159,14 +159,19 @@ a clean system has none of them until `xcode-select --install` has been run.
 
 ```
 $ sbcl --eval '(asdf:test-system "asdf-macos-app")' --quit
-179 checks, 0 failures
+181 checks, 0 failures
 ```
 
 CI runs the suite on both Linux and macOS. The Linux leg covers layout,
 plists, staging, freshness, the child protocol and the Mach-O parsers; the
 macOS leg is the one that actually runs plutil, ad-hoc codesign and
 `codesign --verify` against a real SBCL image, which is the riskiest part of
-the design.
+the design. Exactly one test signs, so a signing failure reports as one
+failure instead of taking out every build test.
+
+The fixture systems under `tests/fixture` are checked in as `.asd.in` and
+renamed when the suite copies them to a scratch directory, so a recursive
+source registry over this repository does not register them.
 
 The build tests shell out to a real SBCL and dump images, so the suite takes
 around thirty seconds. It works in a scratch directory and redirects the built

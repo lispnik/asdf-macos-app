@@ -23,9 +23,21 @@ jobs:
       # The Linux leg exercises layout, plists, staging, freshness, the child
       # protocol and the parsers. The macOS leg is the one that runs plutil,
       # codesign and verify against a real SBCL image.
+      # macOS-only diagnostics: if the signing test fails, these are the first
+      # things worth knowing.
+      - name: Toolchain versions
+        if: runner.os == 'macOS'
+        run: |
+          sw_vers
+          sbcl --version
+          codesign --version || true
+          xcode-select -p || true
+
+      # Note the single trailing slash: NOT recursive. A recursive registry
+      # here would register tests/fixture's systems globally.
       - name: Run tests
         env:
-          CL_SOURCE_REGISTRY: ${{ github.workspace }}//
+          CL_SOURCE_REGISTRY: ${{ github.workspace }}/
         run: |
           sbcl --non-interactive \
                --eval '(require :asdf)' \

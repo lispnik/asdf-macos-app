@@ -11,9 +11,5 @@
   :bundle-resources ("res/" ("extra.txt" . "data/renamed.txt"))
   :bundle-log t
   :bundle-log-max-bytes 512
-  ;; Ad-hoc signing needs no certificate, so CI's macOS runner exercises
-  ;; sign-bundle and verify-signature against a real SBCL image -- the single
-  ;; riskiest thing in this design. Off macOS this is skipped with a note.
-  :code-signing-identity "-"
   :depends-on ("macos-app-test-lib")
   :components ((:file "main")))

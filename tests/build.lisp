@@ -8,9 +8,17 @@
 (in-package #:asdf-macos-app-tests)
 
 (defparameter +fixture-files+
-  '("app/macos-app-test-fixture.asd" "app/main.lisp" "app/extra.txt"
-    "app/res/note.txt" "app/res/sub/nested.txt"
-    "lib/macos-app-test-lib.asd" "lib/lib.lisp"))
+  ;; The .asd files are checked in as .asd.in and renamed on copy. Otherwise a
+  ;; recursive source registry over this repository -- CI's, or a developer's
+  ;; own -- would register the fixture systems globally, and the suite would be
+  ;; quietly relying on asdf:*central-registry* being searched first.
+  '(("app/macos-app-test-fixture.asd.in" . "app/macos-app-test-fixture.asd")
+    ("app/main.lisp" . "app/main.lisp")
+    ("app/extra.txt" . "app/extra.txt")
+    ("app/res/note.txt" . "app/res/note.txt")
+    ("app/res/sub/nested.txt" . "app/res/sub/nested.txt")
+    ("lib/macos-app-test-lib.asd.in" . "lib/macos-app-test-lib.asd")
+    ("lib/lib.lisp" . "lib/lib.lisp")))
 
 (defun fixture-source-directory ()
   (asdf:system-relative-pathname "asdf-macos-app/tests" "tests/fixture/"))
@@ -30,10 +38,12 @@ edit its sources without touching the repository."
      (unwind-protect
           (progn
             (ensure-directories-exist ,dir)
-            (dolist (f +fixture-files+)
-              (let ((to (uiop:subpathname ,dir f)))
-                (ensure-directories-exist to)
-                (uiop:copy-file (uiop:subpathname (fixture-source-directory) f) to)))
+            (loop for (from . to) in +fixture-files+
+                  for target = (uiop:subpathname ,dir to)
+                  do (ensure-directories-exist target)
+                     (uiop:copy-file (uiop:subpathname (fixture-source-directory)
+                                                       from)
+                                     target))
             ;; Registered here and nowhere else: no config file, no environment
             ;; variable. If the child cannot see these, item 8 has regressed.
             (let ((asdf:*central-registry*
@@ -416,15 +426,35 @@ scratch directory so the suite never touches the real ~/Library/Logs."
       (signals app:app-build-error
         (app:notarize bundle :keychain-profile "nonexistent")))))
 
-(deftest signing-happens-only-where-it-can
+(deftest unsigned-is-the-default
   (with-fixture (dir)
+    (let ((bundle (build-fixture)))
+      (is (probe-file (app-dir dir)))
+      (is (null (probe-file
+                 (uiop:subpathname bundle
+                                   "Contents/Resources/entitlements.plist")))))))
+
+(deftest ad-hoc-signing-round-trip
+  ;; Deliberately the only test that signs. Ad-hoc signing needs no
+  ;; certificate, so CI's macOS runner exercises sign-bundle and
+  ;; verify-signature against a real SBCL image -- the riskiest thing in this
+  ;; design, and the one an appended core could break. Isolating it here means
+  ;; a signing failure reports as one failure rather than taking out every
+  ;; build test and hiding whatever else went wrong.
+  (with-fixture (dir)
+    (replace-in-file (fixture-asd dir)
+                     ":bundle-log-max-bytes 512"
+                     ":bundle-log-max-bytes 512
+  :code-signing-identity \"-\"")
+    (clear-fixture-systems)
     (multiple-value-bind (bundle output) (build-fixture)
       (if (app::macos-p)
-          ;; ad-hoc signed and verified during the build
-          (is (probe-file (uiop:subpathname bundle
-                                            "Contents/Resources/entitlements.plist")))
+          ;; sign-bundle ran verify-signature itself; reaching here means it
+          ;; passed. entitlements.plist is the observable side effect.
+          (is (probe-file (uiop:subpathname
+                           bundle "Contents/Resources/entitlements.plist")))
           (progn
             (is (search "left unsigned" output))
             (is (null (probe-file
-                       (uiop:subpathname bundle
-                                         "Contents/Resources/entitlements.plist")))))))))
+                       (uiop:subpathname
+                        bundle "Contents/Resources/entitlements.plist")))))))))
