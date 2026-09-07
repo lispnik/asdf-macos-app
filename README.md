@@ -33,10 +33,13 @@ relocation, verification — can run in the same image. `macos-app-op` therefore
 creates the bundle skeleton, spawns a child SBCL to perform
 `macos-app-image-op` (which dumps straight into `Contents/MacOS/`), and then
 finishes the bundle in the parent. The child is told where to write via the
-`ASDF_MACOS_APP_BUNDLE` environment variable, and inherits the parent's
-`CL_SOURCE_REGISTRY` plus the extension's and the target system's directories.
-It does *not* get `--no-userinit`, so an ocicl-style registry set up in your
-init file is still visible.
+`ASDF_MACOS_APP_BUNDLE` environment variable, and gets an explicit source
+registry naming every system in the resolved dependency closure — inheriting
+`CL_SOURCE_REGISTRY` is not enough, since the parent may have found systems
+through `asdf:*central-registry*` or a search function the child cannot see.
+That registry travels inside the bootstrap file rather than the environment,
+which has no length limit. The child does *not* get `--no-userinit`, so an
+ocicl-style registry set up in your init file still applies on top.
 
 **The executable is never rewritten.** SBCL appends the core image to the
 Mach-O file; `install_name_tool` is not guaranteed to leave that intact. So no
@@ -128,9 +131,12 @@ walked into, helper executables sitting beside the main one in
 `codesign --verify --deep --strict` and fails loudly if that does not pass.
 
 `:bundle-resources` destinations are checked before anything is copied: they
-must stay inside `Contents/Resources`, must not take a name the build itself
-generates (`<exe>.icns`, `entitlements.plist`, `foreign-libraries.sexp`), and
-two resources may not install to the same place.
+must stay inside `Contents/Resources` (checked both as a path and through the
+truename of the deepest existing ancestor), must not take a name the build
+itself generates (`<exe>.icns`, `entitlements.plist`,
+`foreign-libraries.sexp`), and two resources may not install to the same
+place. Symbolic links are refused rather than followed, since copying through
+one is how a resource escapes the bundle.
 
 Notarization is a separate step, since it needs credentials and network:
 
@@ -159,7 +165,7 @@ a clean system has none of them until `xcode-select --install` has been run.
 
 ```
 $ sbcl --eval '(asdf:test-system "asdf-macos-app")' --quit
-181 checks, 0 failures
+202 checks, 0 failures
 ```
 
 CI runs the suite on both Linux and macOS. The Linux leg covers layout,

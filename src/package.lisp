@@ -58,10 +58,14 @@ muffle warnings, and these are things the person running the build must see."
   (finish-output *standard-output*))
 
 (defparameter +required-tools+
-  '("/usr/bin/otool" "/usr/bin/install_name_tool" "/usr/bin/codesign"
-    "/usr/bin/plutil")
-  "Command line tools the build shells out to. All ship with Xcode's command
-line tools rather than with the base system.")
+  '("/usr/bin/otool" "/usr/bin/install_name_tool"   ; Xcode command line tools
+    "/usr/bin/codesign" "/usr/bin/plutil"           ; base system
+    "/usr/bin/sips" "/usr/bin/iconutil"             ; icon conversion
+    "/usr/bin/ditto")                               ; notarisation
+  "Every command line tool the build shells out to, checked up front by
+REQUIRE-MACOS so a missing one is reported before any work happens rather than
+from somewhere deep inside RUN. A test asserts this list covers every
+/usr/bin/ literal in the sources, because the two drift apart otherwise.")
 
 (defun missing-build-tools (&optional (tools +required-tools+))
   (remove-if #'probe-file tools))

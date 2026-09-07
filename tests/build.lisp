@@ -213,33 +213,66 @@ scratch directory so the suite never touches the real ~/Library/Logs."
 ;;; ------------------------------------------------------------------
 ;;; child registry propagation
 
+(defun registry-directories (form)
+  (loop for e in (rest form) when (consp e) collect (second e)))
+
 (deftest child-registry-lists-the-whole-closure
   (with-fixture (dir)
     (let* ((system (asdf:find-system "macos-app-test-fixture"))
-           (text (app::child-source-registry system)))
-      (is (uiop:string-prefix-p "(:SOURCE-REGISTRY" (string-upcase text)))
-      (is (search (uiop:native-namestring (app-dir dir)) text))
+           (form (app::child-source-registry-form system))
+           (dirs (registry-directories form)))
+      (is (eq :source-registry (first form)))
+      (is (member (uiop:native-namestring (app-dir dir)) dirs :test #'equal))
       ;; the dependency, reachable only through *central-registry*
-      (is (search (uiop:native-namestring (lib-dir dir)) text))
+      (is (member (uiop:native-namestring (lib-dir dir)) dirs :test #'equal))
       ;; the extension itself, so the child can read :defsystem-depends-on
-      (is (search (uiop:native-namestring
+      (is (member (uiop:native-namestring
                    (asdf:system-source-directory
                     (asdf:find-system "asdf-macos-app")))
-                  text))
-      (is (search "INHERIT-CONFIGURATION" (string-upcase text))))))
+                  dirs :test #'equal))
+      (is (eq :inherit-configuration (car (last form)))))))
 
-(deftest child-registry-is-a-readable-form
+(deftest child-registry-is-well-formed
   (with-fixture (dir)
     (is (probe-file (lib-dir dir)))
-    (let* ((text (app::child-source-registry
-                  (asdf:find-system "macos-app-test-fixture")))
-           (form (let ((*read-eval* nil)) (read-from-string text))))
-      (is (eq :source-registry (first form)))
-      (is (eq :inherit-configuration (car (last form))))
+    (let ((form (app::child-source-registry-form
+                 (asdf:find-system "macos-app-test-fixture"))))
       (is (every (lambda (e) (or (keywordp e)
                                  (and (consp e) (eq :directory (first e))
                                       (stringp (second e)))))
                  (rest form))))))
+
+(deftest central-registry-entries-are-not-evaluated
+  (let* ((canary nil)
+         (asdf:*central-registry*
+           (list #p"/tmp/plain/"
+                 '*default-pathname-defaults*
+                 ;; ASDF would evaluate this; we must not
+                 '(progn (setf canary t) #p"/tmp/evaluated/"))))
+    (declare (ignorable canary))
+    (let ((dirs (mapcar #'uiop:native-namestring
+                        (app::central-registry-directories))))
+      (is (member "/tmp/plain/" dirs :test #'equal))
+      ;; a bound special is read for its value, which is the common idiom
+      (is (member (uiop:native-namestring
+                   (uiop:ensure-directory-pathname *default-pathname-defaults*))
+                  dirs :test #'equal))
+      (is (not (member "/tmp/evaluated/" dirs :test #'equal))))))
+
+(deftest bootstrap-mentions-no-package-of-ours
+  ;; The child reads the bootstrap before this extension exists there, so a
+  ;; symbol interned in our package is a read error rather than a warning.
+  (with-fixture (dir)
+    (is (probe-file (app-dir dir)))
+    (let* ((system (asdf:find-system "macos-app-test-fixture"))
+           (text (with-output-to-string (s)
+                   (app::write-child-bootstrap
+                    s (app::child-bootstrap-forms
+                       (asdf:system-source-file system) "x" #p"/tmp/s.sexp"
+                       (app::child-source-registry-form system))))))
+      (is (not (search "ASDF-MACOS-APP::" text)))
+      (is (not (search "ASDF-MACOS-APP-TESTS::" text)))
+      (is (search "(REQUIRE :ASDF)" text)))))
 
 ;;; ------------------------------------------------------------------
 ;;; child failure diagnosis

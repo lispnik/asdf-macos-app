@@ -211,15 +211,36 @@ itself, so it cannot be mistaken for something shippable."
            output)
       (ignore-errors (uiop:delete-directory-tree iconset :validate t)))))
 
+(defun symlink-p (path)
+  "True if PATH resolves somewhere other than itself."
+  (let ((resolved (ignore-errors (uiop:truename* path))))
+    (and resolved
+         (not (equal (uiop:native-namestring resolved)
+                     (uiop:native-namestring
+                      (if (uiop:directory-pathname-p path)
+                          (uiop:ensure-directory-pathname path)
+                          path)))))))
+
+(defun check-not-a-symlink (path)
+  ;; Copying through a symlink would pull in whatever it points at, which is
+  ;; how a resource escapes the bundle. Refuse rather than follow.
+  (when (symlink-p path)
+    (barf "Resource ~a is a symbolic link. Point :BUNDLE-RESOURCES at the ~
+           real file or directory instead." (uiop:native-namestring path)))
+  path)
+
 (defun copy-tree-into (source dest)
-  "Copy SOURCE, a file or a directory, to DEST. Directories are copied whole."
+  "Copy SOURCE, a file or a directory, to DEST. Directories are copied whole.
+Symbolic links anywhere in SOURCE are refused, not followed."
+  (check-not-a-symlink source)
   (cond
     ((uiop:directory-exists-p source)
      (let ((source (uiop:ensure-directory-pathname source))
            (dest (uiop:ensure-directory-pathname dest)))
        (ensure-directories-exist dest)
        (dolist (f (uiop:directory-files source))
-         (uiop:copy-file f (uiop:subpathname dest (file-namestring f))))
+         (uiop:copy-file (check-not-a-symlink f)
+                         (uiop:subpathname dest (file-namestring f))))
        (dolist (d (uiop:subdirectories source))
          (copy-tree-into d (uiop:subpathname
                             dest (format nil "~a/"
@@ -229,6 +250,16 @@ itself, so it cannot be mistaken for something shippable."
      (uiop:copy-file source dest))
     (t (barf "Resource ~a does not exist." source)))
   dest)
+
+(defun existing-ancestor (path)
+  "The truename of the deepest directory at or above PATH that exists."
+  (let ((dir (uiop:pathname-directory-pathname path)))
+    (dotimes (i 64 dir)
+      (let ((resolved (ignore-errors (uiop:truename* dir))))
+        (when resolved (return resolved)))
+      (let ((parent (uiop:pathname-parent-directory-pathname dir)))
+        (when (equal parent dir) (return dir))
+        (setf dir parent)))))
 
 (defun reserved-resource-names (spec)
   "Names inside Contents/Resources that the build writes itself. A resource
@@ -245,9 +276,15 @@ the bundle needs."
                                       resources))
          (native (uiop:native-namestring dest))
          (root (uiop:native-namestring resources)))
-    ;; a "../" in the destination would land in Contents/ and could overwrite
-    ;; Info.plist or the executable
-    (unless (uiop:string-prefix-p root native)
+    ;; A "../" in the destination would land in Contents/ and could overwrite
+    ;; Info.plist or the executable. Comparing the merged strings catches that,
+    ;; but not a symlink partway down, so the deepest existing ancestor is
+    ;; resolved and checked too.
+    (unless (and (uiop:string-prefix-p root native)
+                 (uiop:string-prefix-p (uiop:native-namestring
+                                        (uiop:truename* resources))
+                                       (uiop:native-namestring
+                                        (existing-ancestor dest))))
       (barf "Resource destination ~s escapes Contents/Resources." relative))
     (let ((top (first (remove "" (uiop:split-string relative :separator "/")
                               :test #'string=))))

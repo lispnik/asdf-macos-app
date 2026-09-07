@@ -367,3 +367,65 @@ Load command 16
     (is (app::empty-bundle-stub-p (app::spec-root spec))))
   (with-scratch-bundle (spec "Contents/Resources/something.txt")
     (is (not (app::empty-bundle-stub-p (app::spec-root spec))))))
+
+;;; ------------------------------------------------------------------
+;;; symlinked resources are refused, not followed
+
+(deftest symlinked-resource-is-refused
+  (with-scratch-bundle (spec "outside/secret.txt" "payload/ok.txt")
+    (let* ((root (uiop::pathname-parent-directory-pathname (app::spec-root spec)))
+           (target (uiop:subpathname root "Scratch.app/outside/secret.txt"))
+           (link (uiop:subpathname root "Scratch.app/payload/link.txt")))
+      (app::run (list "/bin/ln" "-s" (uiop:native-namestring target)
+                      (uiop:native-namestring link)))
+      (is (app::symlink-p link))
+      (is (not (app::symlink-p target)))
+      ;; copying the directory must not silently pull in the link's target
+      (signals app:app-build-error
+        (app::copy-tree-into (uiop:subpathname root "Scratch.app/payload/")
+                             (uiop:subpathname (app::resources-dir spec)
+                                               "payload/"))))))
+
+(deftest symlinked-resource-given-directly-is-refused
+  (with-scratch-bundle (spec "outside/secret.txt")
+    (let* ((root (uiop::pathname-parent-directory-pathname (app::spec-root spec)))
+           (target (uiop:subpathname root "Scratch.app/outside/secret.txt"))
+           (link (uiop:subpathname root "direct-link.txt")))
+      (app::run (list "/bin/ln" "-s" (uiop:native-namestring target)
+                      (uiop:native-namestring link)))
+      (signals app:app-build-error
+        (app::copy-tree-into link (uiop:subpathname (app::resources-dir spec)
+                                                    "x.txt"))))))
+
+(deftest existing-ancestor-resolves-the-deepest-real-directory
+  (with-scratch-bundle (spec)
+    (let ((res (app::resources-dir spec)))
+      ;; nothing of "a/b/c" exists, so it resolves back to Resources itself
+      (is= (uiop:native-namestring (uiop:truename* res))
+           (uiop:native-namestring
+            (app::existing-ancestor (uiop:subpathname res "a/b/c.txt")))))))
+
+;;; ------------------------------------------------------------------
+;;; the tool list must not drift from the call sites
+
+(deftest every-tool-we-shell-out-to-is-declared
+  ;; +REQUIRED-TOOLS+ is what REQUIRE-MACOS checks for. If a new /usr/bin call
+  ;; appears in the sources without being added there, a machine missing that
+  ;; tool fails deep inside RUN instead of up front.
+  (let ((declared app::+required-tools+)
+        (found '()))
+    (dolist (file (uiop:directory-files
+                   (asdf:system-relative-pathname "asdf-macos-app" "src/")))
+      (when (equal "lisp" (pathname-type file))
+        (let ((text (uiop:read-file-string file)))
+        (loop with start = 0
+              for at = (search "\"/usr/bin/" text :start2 start)
+              while at
+              do (let ((end (position #\" text :start (1+ at))))
+                   (pushnew (subseq text (1+ at) end) found :test #'string=)
+                   (setf start (or end (length text))))))))
+    (is found)
+    (dolist (tool found)
+      ;; xcrun is invoked only by NOTARIZE, which is not part of a build
+      (unless (string= tool "/usr/bin/xcrun")
+        (is (member tool declared :test #'string=))))))

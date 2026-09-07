@@ -5,7 +5,7 @@
   :author "Matthew"
   :license "MIT"
   :version "0.1.0"
-  :depends-on ()
+  :depends-on (#+sbcl (:require "sb-posix"))
   :serial t
   :components ((:module "src"
                 :components ((:file "package")

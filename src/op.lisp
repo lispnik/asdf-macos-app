@@ -133,33 +133,43 @@ child Lisp performs; it never returns."))
       #+sbcl (uiop:native-namestring sb-ext:*runtime-pathname*)
       #-sbcl (barf "Set MACOS-APP:*CHILD-LISP*; only SBCL is supported.")))
 
-(defun child-source-registry (system)
+(defun central-registry-directories ()
+  "Directory entries of ASDF:*CENTRAL-REGISTRY*. ASDF evaluates these entries;
+we deliberately do not. A pathname or string is taken as is and a symbol is
+read for its value, which covers the usual *DEFAULT-PATHNAME-DEFAULTS* idiom;
+anything else is skipped rather than evaluated, because assembling a build
+should not run arbitrary forms found in a special variable."
+  (loop for entry in asdf:*central-registry*
+        for value = (typecase entry
+                      ((or pathname string) entry)
+                      (symbol (and (boundp entry) (symbol-value entry)))
+                      (t nil))
+        when (typep value '(or pathname string))
+          collect (ignore-errors (uiop:ensure-directory-pathname value))))
+
+(defun child-source-registry-form (system)
   "An explicit source registry for the child, one (:directory ...) per system
-in the resolved dependency closure. Inheriting CL_SOURCE_REGISTRY alone is not
+in the resolved dependency closure. Inheriting configuration alone is not
 enough: the parent may have found systems through asdf:*central-registry* or a
 search function (ocicl, say) that the child's own configuration cannot see.
-:inherit-configuration is still appended so the child's init files apply."
+
+This is passed inside the bootstrap file rather than through the environment.
+CL_SOURCE_REGISTRY would work for a small project, but the closure of a large
+one can outgrow the argument and environment limit, and a file has no such
+bound."
   (let* ((closure (cons (asdf:find-system "asdf-macos-app")
                         (dependency-closure (asdf:component-name system))))
-         (from-closure (mapcar #'asdf:system-source-directory closure))
-         (from-central (mapcar (lambda (entry)
-                                 (ignore-errors
-                                  (uiop:ensure-directory-pathname (eval entry))))
-                               asdf:*central-registry*))
-         (dirs (remove-duplicates (remove nil (append from-closure from-central))
-                                  :test #'equal :from-end t)))
-    (with-standard-io-syntax
-      (let ((*print-pretty* nil))
-        (prin1-to-string
-         `(:source-registry
-           ,@(mapcar (lambda (d) (list :directory (uiop:native-namestring d))) dirs)
-           :inherit-configuration))))))
+         (dirs (remove-duplicates
+                (remove nil (append (mapcar #'asdf:system-source-directory closure)
+                                    (central-registry-directories)))
+                :test #'equal :from-end t)))
+    `(:source-registry
+      ,@(mapcar (lambda (d) (list :directory (uiop:native-namestring d))) dirs)
+      :inherit-configuration)))
 
-(defun child-environment (system spec)
+(defun child-environment (spec)
   (let ((overrides (list (cons +bundle-env-var+
-                               (uiop:native-namestring (spec-root spec)))
-                         (cons "CL_SOURCE_REGISTRY"
-                               (child-source-registry system)))))
+                               (uiop:native-namestring (spec-root spec))))))
     (append (loop for (k . v) in overrides collect (format nil "~a=~a" k v))
             (remove-if (lambda (entry)
                          (some (lambda (o)
@@ -170,41 +180,64 @@ search function (ocicl, say) that the child's own configuration cannot see.
                        #-sbcl nil))))
 
 (defparameter +child-phases+
-  '((:reading-system  . "reading the .asd (a dependency system may be unfindable)")
+  '((:configuring     . "configuring the source registry")
+    (:reading-system  . "reading the .asd (a dependency system may be unfindable)")
     (:loading-system  . "compiling and loading the system")
     (:dumping-image   . "dumping the executable"))
   "What each phase means, for the parent's error message.")
 
-(defun child-bootstrap (asd system-name status-file)
-  "Source for the file the child --loads. Self-contained plain CL: it must be
-able to report a failure in LOAD-ASD itself, which happens before this
-extension has been loaded in the child."
+(defun cl-user-symbol (name)
+  "Symbols in the bootstrap must be readable by the child before any of our
+packages exist there, so they live in CL-USER."
+  (intern name (find-package :cl-user)))
+
+(defun child-bootstrap-forms (asd system-name status-file registry)
+  "The forms the child --loads. Built as data and printed, rather than
+interpolated into a template: a template is read as one opaque string, so an
+arity or quoting mistake in it is only caught, if at all, by the compiler in
+the child. Self-contained plain CL, because it must be able to report a
+failure in LOAD-ASD itself -- which happens before this extension is loaded
+in the child."
+  (let ((status (cl-user-symbol "*STATUS-FILE*"))
+        (phase (cl-user-symbol "*PHASE*"))
+        (report (cl-user-symbol "REPORT-STATUS"))
+        (enter (cl-user-symbol "ENTER-PHASE"))
+        (condition (cl-user-symbol "CONDITION"))
+        (new-phase (cl-user-symbol "NEW-PHASE"))
+        (stream (cl-user-symbol "STREAM"))
+        (out (cl-user-symbol "OUT"))
+        (e (cl-user-symbol "E")))
+    `((require :asdf)
+      (defparameter ,status ,(uiop:native-namestring status-file))
+      (defparameter ,phase :startup)
+      (defun ,report (&optional ,condition)
+        (with-open-file (,out ,status :direction :output :if-exists :supersede)
+          (write (list :phase ,phase
+                       :error (and ,condition (princ-to-string ,condition))
+                       :backtrace
+                       (and ,condition
+                            (with-output-to-string (,stream)
+                              (ignore-errors
+                               (uiop:print-backtrace :stream ,stream
+                                                     :condition ,condition)))))
+                 :stream ,out :readably nil :escape t :pretty nil)))
+      (defun ,enter (,new-phase) (setf ,phase ,new-phase) (,report))
+      (handler-bind ((error (lambda (,e) (,report ,e) (uiop:quit 1))))
+        (,enter :configuring)
+        (asdf:initialize-source-registry ',registry)
+        (,enter :reading-system)
+        (asdf:load-asd ,(uiop:native-namestring asd))
+        (,enter :loading-system)
+        (asdf:load-system ,system-name)
+        (,enter :dumping-image)
+        (asdf:operate 'asdf::macos-app-image-op ,system-name)))))
+
+(defun write-child-bootstrap (stream forms)
   (with-standard-io-syntax
-    (let ((*print-pretty* nil))
-      (format nil "~
-(require :asdf)
-(defvar *phase* :startup)
-(defun %status (&optional condition)
-  (with-open-file (s ~s :direction :output :if-exists :supersede)
-    (write (list :phase *phase*
-                 :error (and condition (princ-to-string condition))
-                 :backtrace (and condition
-                                 (with-output-to-string (b)
-                                   (ignore-errors
-                                    (uiop:print-backtrace :stream b :condition condition)))))
-           :stream s :readably nil :escape t :pretty nil)))
-(defun %enter (phase) (setf *phase* phase) (%status))
-(handler-bind ((error (lambda (e) (%status e) (uiop:quit 1))))
-  (%enter :reading-system)
-  (asdf:load-asd ~s)
-  (%enter :loading-system)
-  (asdf:load-system ~s)
-  (%enter :dumping-image)
-  (asdf:operate 'asdf::macos-app-image-op ~s))
-"
-              (uiop:native-namestring status-file)
-              (uiop:native-namestring asd)
-              system-name system-name))))
+    (let ((*print-pretty* nil) (*print-readably* nil) (*print-escape* t))
+      (dolist (form forms)
+        (prin1 form stream)
+        (terpri stream)))))
 
 (defun read-child-status (status-file)
   (when (probe-file status-file)
@@ -236,10 +269,11 @@ extension has been loaded in the child."
   (uiop:with-temporary-file (:pathname status :keep nil :type "sexp")
     (uiop:with-temporary-file (:pathname boot :keep nil :type "lisp"
                                :stream bs :direction :output)
-      (write-string (child-bootstrap (asdf:system-source-file system)
-                                     (asdf:component-name system)
-                                     status)
-                    bs)
+      (write-child-bootstrap
+       bs (child-bootstrap-forms (asdf:system-source-file system)
+                                 (asdf:component-name system)
+                                 status
+                                 (child-source-registry-form system)))
       :close-stream
       (let ((cmd (append (list (child-lisp))
                          #+sbcl (list "--dynamic-space-size"
@@ -252,7 +286,7 @@ extension has been loaded in the child."
         (format *standard-output* "~&; dumping image: ~{~a ~}~%" cmd)
         (let ((code (nth-value 2 (uiop:run-program
                                   cmd
-                                  :environment (child-environment system spec)
+                                  :environment (child-environment spec)
                                   :output :interactive
                                   :error-output :interactive
                                   :ignore-error-status t))))
@@ -277,9 +311,13 @@ extension has been loaded in the child."
   (format nil ".~a-~36r" tag (random (expt 36 8) (make-random-state t))))
 
 (defun mv (from to)
-  (run (list "/bin/mv"
-             (string-right-trim "/" (uiop:native-namestring from))
-             (string-right-trim "/" (uiop:native-namestring to)))))
+  "Move a directory. rename(2) is atomic, which is the point of the staging
+scheme; it only fails across filesystems, and staging, trash and target are
+always siblings. /bin/mv is the fallback for that case."
+  (let ((from (string-right-trim "/" (uiop:native-namestring from)))
+        (to (string-right-trim "/" (uiop:native-namestring to))))
+    (or #+sbcl (ignore-errors (sb-posix:rename from to) t)
+        (progn (run (list "/bin/mv" from to)) t))))
 
 (defvar *replace-complete-bundle* nil
   "Bind to T to allow an incomplete build to replace a complete one.")
