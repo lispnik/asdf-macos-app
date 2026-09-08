@@ -191,6 +191,14 @@ arbitrary."
 
 (deftest second-build-reuses-the-image
   (with-fixture (dir)
+    ;; The fixture's sources were written a moment ago, and FILE-WRITE-DATE is
+    ;; second-granular: on a fast machine the first build finishes in the same
+    ;; second, the core is not STRICTLY newer than its inputs, and the second
+    ;; build re-dumps rather than reusing.  Nothing is wrong when that happens --
+    ;; a needless dump, not a stale one -- but it is not what this test is about.
+    ;; TOUCHING-A-SOURCE-FORCES-A-NEW-IMAGE sleeps for the same reason, from the
+    ;; other side.
+    (sleep 1.1)
     (build-fixture)
     (multiple-value-bind (bundle output) (build-fixture)
       (declare (ignore bundle))
