@@ -57,9 +57,17 @@ edit its sources without touching the repository."
   (asdf:clear-system "macos-app-test-fixture")
   (asdf:clear-system "macos-app-test-lib"))
 
-(defun build-fixture (&rest keys)
-  "Build and return (values bundle-pathname build-output-string)."
-  (let* ((app::*allow-non-macos-build* t)
+(defun build-fixture (&rest keys &key incomplete &allow-other-keys)
+  "Build and return (values bundle-pathname build-output-string).
+
+INCOMPLETE asks for a build that behaves as though it were made off macOS: the
+marker written, signing and relocation skipped.  On Linux that is what happens
+anyway; on a Mac it needs saying, and without it the tests for that behaviour
+passed on Linux and failed here -- untested on the platform the library is for."
+  (let* ((keys (loop for (k v) on keys by #'cddr
+                     unless (eq k :incomplete) append (list k v)))
+         (app::*simulate-non-macos* incomplete)
+         (app::*allow-non-macos-build* t)
          (out (make-string-output-stream))
          (bundle (let ((*standard-output* (make-broadcast-stream
                                            out *standard-output*)))
@@ -242,9 +250,9 @@ arbitrary."
       (ensure-directories-exist (uiop:subpathname stub "Contents/MacOS/"))
       (is (app::empty-bundle-stub-p stub))
       (is (not (app:complete-bundle-p stub)))
-      (let ((bundle (build-fixture)))
+      (let ((bundle (build-fixture :incomplete t)))
         (is (not (app::empty-bundle-stub-p bundle)))
-        ;; built off macOS, so present but not complete
+        ;; asked for an off-macOS build, so present but not complete
         (is (app:incomplete-bundle-p bundle))
         (is (not (app:complete-bundle-p bundle)))))))
 
@@ -323,10 +331,14 @@ arbitrary."
 ;;; ------------------------------------------------------------------
 ;;; child failure diagnosis
 
-(defun failed-build-message (dir)
-  "Build, expecting failure, and return the error text."
+(defun failed-build-message (dir &rest keys)
+  "Build, expecting failure, and return the error text.
+
+KEYS reach BUILD-FIXTURE, which matters for :INCOMPLETE: the refusal being
+tested is an INCOMPLETE build declining to replace a complete one, so a second
+build that is complete is allowed through and there is no message to return."
   (declare (ignorable dir))
-  (handler-case (progn (build-fixture) nil)
+  (handler-case (progn (apply #'build-fixture keys) nil)
     (app:app-build-error (e) (princ-to-string e))))
 
 (deftest failure-while-loading-names-that-phase
@@ -460,7 +472,7 @@ arbitrary."
 
 (deftest incomplete-build-will-not-replace-a-complete-one
   (with-fixture (dir)
-    (let ((bundle (build-fixture)))
+    (let ((bundle (build-fixture :incomplete t)))
       ;; pretend the committed bundle was built properly on a Mac
       (delete-file (uiop:subpathname
                     bundle (format nil "Contents/~a"
@@ -468,7 +480,7 @@ arbitrary."
       (is (app:complete-bundle-p bundle))
       (sleep 1.1)
       (clear-fixture-systems)
-      (let ((msg (failed-build-message dir)))
+      (let ((msg (failed-build-message dir :incomplete t)))
         (is msg)
         (is (search "Refusing to replace" msg)))
       ;; and the good bundle is still there
@@ -478,27 +490,27 @@ arbitrary."
 
 (deftest incomplete-build-may-replace-another-incomplete-one
   (with-fixture (dir)
-    (let ((bundle (build-fixture)))
+    (let ((bundle (build-fixture :incomplete t)))
       (is (app:incomplete-bundle-p bundle))
       (sleep 1.1)
       (clear-fixture-systems)
-      (is (build-fixture :force-image t)))))
+      (is (build-fixture :incomplete t :force-image t)))))
 
 (deftest override-allows-replacing-a-complete-bundle
   (with-fixture (dir)
-    (let ((bundle (build-fixture)))
+    (let ((bundle (build-fixture :incomplete t)))
       (delete-file (uiop:subpathname
                     bundle (format nil "Contents/~a"
                                    app:*incomplete-build-marker*)))
       (sleep 1.1)
       (clear-fixture-systems)
       (let ((app::*replace-complete-bundle* t))
-        (is (build-fixture :force-image t)))
+        (is (build-fixture :incomplete t :force-image t)))
       (is (app:incomplete-bundle-p bundle)))))
 
 (deftest notarising-an-incomplete-bundle-is-refused
   (with-fixture (dir)
-    (let ((bundle (build-fixture)))
+    (let ((bundle (build-fixture :incomplete t)))
       (is (probe-file (app-dir dir)))
       (is (app:incomplete-bundle-p bundle))
       ;; must refuse before shelling out to ditto, which is not present here

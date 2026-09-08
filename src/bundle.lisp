@@ -237,14 +237,22 @@ itself, so it cannot be mistaken for something shippable."
       (ignore-errors (uiop:delete-directory-tree iconset :validate t)))))
 
 (defun symlink-p (path)
-  "True if PATH resolves somewhere other than itself."
-  (let ((resolved (ignore-errors (uiop:truename* path))))
-    (and resolved
-         (not (equal (uiop:native-namestring resolved)
-                     (uiop:native-namestring
-                      (if (uiop:directory-pathname-p path)
-                          (uiop:ensure-directory-pathname path)
-                          path)))))))
+  "True if PATH ITSELF is a symbolic link.
+
+lstat, not TRUENAME.  Comparing a path against its truename answers \"is there a
+symlink ANYWHERE in this path\", which on macOS is nearly always yes: /var is a
+symlink to /private/var, so every file under /tmp or in a temporary directory
+resolved to a different string and was reported as a link.  That is a false
+positive with teeth -- CHECK-NOT-A-SYMLINK refuses what it flags, so perfectly
+ordinary resources under a temporary directory were rejected.
+
+lstat asks about the leaf and nothing above it, which is the question."
+  (let ((stat (ignore-errors
+               (sb-posix:lstat (uiop:native-namestring
+                                (if (uiop:directory-pathname-p path)
+                                    (uiop:ensure-directory-pathname path)
+                                    path))))))
+    (and stat (sb-posix:s-islnk (sb-posix:stat-mode stat)) t)))
 
 (defun check-not-a-symlink (path)
   ;; Copying through a symlink would pull in whatever it points at, which is

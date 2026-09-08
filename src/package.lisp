@@ -19,6 +19,7 @@
    #:*child-lisp*
    #:*child-lisp-options*
    #:*allow-non-macos-build*
+   #:*simulate-non-macos*
    #:*incomplete-build-marker*
    #:incomplete-bundle-p
    #:complete-bundle-p
@@ -49,7 +50,18 @@ Info.plist will be correct, but nothing that needs otool, install_name_tool,
 codesign, sips or plutil will run. Useful for CI smoke tests; never for a
 shippable artifact.")
 
-(defun macos-p () (uiop:os-macosx-p))
+(defvar *simulate-non-macos* nil
+  "Bind to T to make MACOS-P answer NIL on a Mac.
+
+For the suite, and only for it.  The incomplete-build behaviour -- the marker,
+the refusal to replace a complete bundle, the refusal to notarise -- exists for
+builds made off macOS, and could previously only be exercised BY building off
+macOS.  So those tests passed on Linux and failed on a Mac, which is the worst
+of both: the developer sees red on the machine the library is for, and the
+behaviour goes untested on the machine most people run it from.")
+
+(defun macos-p ()
+  (and (not *simulate-non-macos*) (uiop:os-macosx-p)))
 
 (defun note (format-control &rest args)
   "Say something on the build log. Deliberately not WARN: a build driver may
