@@ -222,6 +222,16 @@ parsers are covered against captured `otool` output.
 
 ## Known limits and things to check
 
+- **`SBCL_HOME` in the environment loads the wrong core.** The executable is the
+  SBCL runtime and finds `sbcl.core` beside itself — *unless* `SBCL_HOME` is
+  set, which wins, and the runtime then loads whatever core lives there. The
+  application drops into a plain SBCL REPL and never starts. LaunchServices sets
+  no `SBCL_HOME`, so a double-clicked app is unaffected; a bundle launched from
+  a shell that has one is not, and Homebrew's `sbcl` is a wrapper script that
+  exports it. There is no fix without a launcher binary that passes `--core`
+  explicitly, which would mean a C toolchain in the build. Launch the bundle
+  with `env -u SBCL_HOME` if you need to run it from such a shell.
+
 - **The banner.** A separate core prints SBCL's startup banner unless
   `--noinform` is passed, and LaunchServices passes nothing. It is printed by
   the C runtime before Lisp starts, so no `:toplevel` can suppress it; only an

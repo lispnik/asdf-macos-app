@@ -86,7 +86,19 @@ that silently edits nothing is worse than no test."
 (defun run-bundle (bundle dir &key (fresh t))
   "Run the app's executable and return whatever it printed. Inside a bundle the
 generated toplevel redirects to a log file; MACOS_APP_LOG points that at the
-scratch directory so the suite never touches the real ~/Library/Logs."
+scratch directory so the suite never touches the real ~/Library/Logs.
+
+SBCL_HOME IS STRIPPED, and that is not tidiness. The bundled executable is the
+SBCL runtime, which finds its core beside itself -- unless SBCL_HOME is set, in
+which case that wins and the runtime loads whatever core lives there instead.
+Homebrew's `sbcl' is a shell wrapper that exports SBCL_HOME, so a suite run from
+one hands the child a variable that makes the application load a DIFFERENT core
+and drop into a plain REPL. The tests then see no output and fail on macOS while
+passing on Linux, which is exactly what happened.
+
+Stripping it is also the honest test: LaunchServices sets no SBCL_HOME, so a
+double-clicked application never has one. See the note in the README about
+launching from a shell that does."
   (let* ((exe (uiop:subpathname bundle "Contents/MacOS/fixture"))
          (log (uiop:subpathname dir "fixture.log"))
          (var (concatenate 'string app::+log-override-variable+ "=")))
@@ -94,7 +106,9 @@ scratch directory so the suite never touches the real ~/Library/Logs."
     (uiop:run-program (list (uiop:native-namestring exe))
                       :environment
                       (cons (concatenate 'string var (uiop:native-namestring log))
-                            (remove-if (lambda (e) (uiop:string-prefix-p var e))
+                            (remove-if (lambda (e)
+                                         (or (uiop:string-prefix-p var e)
+                                             (uiop:string-prefix-p "SBCL_HOME=" e)))
                                        #+sbcl (sb-ext:posix-environ) #-sbcl nil))
                       :output :interactive :error-output :interactive)
     (if (probe-file log) (uiop:read-file-string log) "")))
