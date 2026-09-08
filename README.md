@@ -25,13 +25,24 @@ $ sbcl --eval '(asdf:make "editor")' --quit
 
 Or from Lisp: `(macos-app:make-app "editor")`.
 
+[**utc-status**](https://github.com/lispnik/utc-status-app) is built this way
+and ships with it: a menu-bar clock whose
+[release](https://github.com/lispnik/utc-status-app/releases) is a signed,
+notarised disk image that opens on any Mac without a warning. It is worth a look
+as a worked example — the [`.asd` that produces
+it](https://github.com/lispnik/utc-status-app/blob/master/utc-status-app-bundle.asd)
+is a dozen options, and it exercises the parts most likely to bite:
+`LSUIElement` for an app with no Dock icon, an icon generated at build time from
+a PNG, a Developer ID taken from the environment so a clone still builds, and
+notarisation of both the bundle and the disk image around it.
+
 ## Two decisions that shape the design
 
 **The image dump kills the process.** `save-lisp-and-die` never returns, so
 nothing that must happen *after* the executable exists — codesigning, dylib
 relocation, verification — can run in the same image. `macos-app-op` therefore
 creates the bundle skeleton, spawns a child SBCL to perform
-`macos-app-image-op` (which dumps straight into `Contents/MacOS/`), and then
+`macos-app-image-op` (which dumps the core into `Contents/Resources/`), and then
 finishes the bundle in the parent. The child is told where to write via the
 `ASDF_MACOS_APP_BUNDLE` environment variable, and gets an explicit source
 registry naming every system in the resolved dependency closure — inheriting
