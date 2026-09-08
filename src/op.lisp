@@ -417,7 +417,7 @@ this system has been rebuilt."
         (ensure-directories-exist (foreign-manifest-path spec))
         (uiop:copy-file old-manifest (foreign-manifest-path spec))))
     (format *standard-output* "~&; image is current, reusing it~%")
-    exe))
+    core))
 
 ;;; ------------------------------------------------------------------
 ;;; ASDF glue
