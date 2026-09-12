@@ -3,6 +3,35 @@
 (in-package #:asdf-macos-app-tests)
 
 ;;; ------------------------------------------------------------------
+;;; the dependency closure
+
+(deftest a-siblings-definition-time-dependency-is-in-the-closure
+  ;; A system's .asd may define other systems, and loading the file loads
+  ;; every :DEFSYSTEM-DEPENDS-ON in it. The child registry has to name
+  ;; those too, or the child stops on the first sibling it meets. Lem's
+  ;; executable system, which wants deploy, is the case that showed it.
+  (uiop:with-temporary-file (:pathname marker :keep nil)
+    (let ((dir (uiop:pathname-directory-pathname marker)))
+      (with-open-file (out (merge-pathnames "closure-tool.asd" dir)
+                           :direction :output :if-exists :supersede)
+        (format out "(defsystem \"closure-tool\")~%"))
+      (with-open-file (out (merge-pathnames "closure-main.asd" dir)
+                           :direction :output :if-exists :supersede)
+        (format out "(defsystem \"closure-main\")~%~
+                     (defsystem \"closure-main/executable\" :defsystem-depends-on (\"closure-tool\"))~%"))
+      (unwind-protect
+           (let ((asdf:*central-registry* (cons dir asdf:*central-registry*)))
+             (let ((names (mapcar #'asdf:component-name
+                                  (app::dependency-closure "closure-main"))))
+               (is (member "closure-main" names :test #'string=))
+               ;; the sibling's definition-time dependency is in the closure
+               (is (member "closure-tool" names :test #'string=))))
+        (dolist (name '("closure-main" "closure-main/executable" "closure-tool"))
+          (asdf:clear-system name))
+        (dolist (file '("closure-tool.asd" "closure-main.asd"))
+          (ignore-errors (delete-file (merge-pathnames file dir))))))))
+
+;;; ------------------------------------------------------------------
 ;;; plist
 
 (defun plist-string (form)

@@ -368,15 +368,38 @@ failure here leaves the old one intact rather than nothing at all."
             append (source-components c))
       (list component)))
 
+(defun sibling-systems (sys)
+  "Every registered system defined in the same .asd file as SYS, SYS
+included. Loading the file defines all of them, so what they need at
+definition time is needed to load SYS."
+  (let ((file (asdf:system-source-file sys)))
+    (if (null file)
+        (list sys)
+        (loop for name in (asdf:registered-systems)
+              for other = (asdf:registered-system name)
+              when (and other (equal (asdf:system-source-file other) file))
+                collect other))))
+
 (defun dependency-closure (name &optional (seen (make-hash-table :test #'equal)))
   "Every system NAME transitively depends on, as system objects, including
 NAME itself. Systems the parent cannot resolve are skipped rather than fatal;
-they may still be findable from the child's own configuration."
+they may still be findable from the child's own configuration.
+
+Two kinds of dependency count: what the system's :DEPENDS-ON names, and
+what its :DEFSYSTEM-DEPENDS-ON names -- for it and for every system in its
+.asd file, because the child loads the whole file, and a sibling system's
+:DEFSYSTEM-DEPENDS-ON is loaded then whether or not that sibling is ever
+built. Lem's lem.asd is the case that found this: its executable system
+wants the deploy system at definition time, and a child whose registry
+came from :DEPENDS-ON alone stopped with deploy not found."
   (let ((sys (and name (ignore-errors (asdf:find-system name nil)))))
     (when (and sys (not (gethash (asdf:component-name sys) seen)))
       (setf (gethash (asdf:component-name sys) seen) t)
-      (cons sys (loop for d in (asdf:system-depends-on sys)
-                      append (dependency-closure (dependency-name d) seen))))))
+      (cons sys
+            (loop for d in (append (asdf:system-depends-on sys)
+                                   (loop for sibling in (sibling-systems sys)
+                                         append (asdf:system-defsystem-depends-on sibling)))
+                  append (dependency-closure (dependency-name d) seen))))))
 
 (defun system-input-files (name)
   "Every .asd and source file that could affect NAME's image, transitively."
