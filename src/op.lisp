@@ -186,6 +186,10 @@ bound."
     (:dumping-image   . "dumping the executable"))
   "What each phase means, for the parent's error message.")
 
+(defun child-fasl-cache ()
+  "Where the child compiles to: beside ASDF's usual cache, but not in it."
+  (uiop:xdg-cache-home "common-lisp/asdf-macos-app-child/"))
+
 (defun cl-user-symbol (name)
   "Symbols in the bootstrap must be readable by the child before any of our
 packages exist there, so they live in CL-USER."
@@ -225,6 +229,16 @@ in the child."
       (handler-bind ((error (lambda (,e) (,report ,e) (uiop:quit 1))))
         (,enter :configuring)
         (asdf:initialize-source-registry ',registry)
+        ;; A fasl cache of the child's own. The parent's cache holds fasls
+        ;; compiled under the parent's features -- :QUICKLISP, say, when the
+        ;; parent was started through Quicklisp or qlot -- and a fasl that
+        ;; names a package the child does not have fails to load with "the
+        ;; loader tried loading the symbol ... into the package ...". Lem's
+        ;; deploy dependency, compiled once under Quicklisp, was the case.
+        (asdf:initialize-output-translations
+         '(:output-translations
+           (t (,(uiop:native-namestring (child-fasl-cache)) :implementation))
+           :ignore-inherited-configuration))
         (,enter :reading-system)
         (asdf:load-asd ,(uiop:native-namestring asd))
         (,enter :loading-system)
