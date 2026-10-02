@@ -479,7 +479,13 @@ this system has been rebuilt."
   (let* ((spec (system-app-spec s))
          (out (core-path spec)))
     (ensure-directories-exist out)
-    (write-foreign-manifest spec (spec-foreign-libraries spec))
+    ;; The libraries that are open now will be reopened by the saved image, and
+    ;; from the bundle rather than from wherever this build found them.  Only
+    ;; on macOS, where they are copied into the bundle at all.
+    (let ((libraries (write-foreign-manifest spec (spec-foreign-libraries spec))))
+      (when (macos-p)
+        (loop for (old . new) in (repoint-shared-objects libraries)
+              do (note "~a will be opened as ~a" old new))))
     ;; Resolve the entry point NOW. Deferring it to launch time means a typo
     ;; produces a perfectly valid bundle that dies on double-click.
     (let ((named (or (asdf::component-entry-point s)

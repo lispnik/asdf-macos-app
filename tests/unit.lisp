@@ -111,6 +111,81 @@
     (is (member "/usr/lib/libSystem.B.dylib" deps :test #'string=))
     (is= 4 (length deps))))
 
+;;; ------------------------------------------------------------------
+;;; reopening bundled libraries from the bundle
+
+(deftest a-bundled-library-is-named-relative-to-the-executable
+  (is= "@executable_path/../Frameworks/libssl.4.dylib"
+       (app::bundled-library-reference
+        "/opt/homebrew/Cellar/openssl@4/4.0.3/lib/libssl.4.dylib"))
+  (is= "@executable_path/../Frameworks/lib with space.dylib"
+       (app::bundled-library-reference "/tmp/a b/lib with space.dylib")))
+
+#+sbcl
+(defun shared-object (namestring &key dont-save)
+  (sb-alien::make-shared-object :pathname (pathname namestring)
+                                :namestring namestring
+                                :handle nil :dont-save dont-save))
+
+#+sbcl
+(deftest open-libraries-that-are-bundled-are-reopened-from-the-bundle
+  "The whole of the fix, on real files: a library reached through a symbolic
+link, as Homebrew's are, is matched by its real path and named by its real
+name, which is the name its copy in Frameworks has."
+  (let* ((dir (uiop:ensure-directory-pathname
+               (uiop:parse-native-namestring
+                (sb-posix:mkdtemp
+                 (uiop:native-namestring
+                  (uiop:subpathname (uiop:temporary-directory)
+                                    "macos-app-repoint-XXXXXX"))))))
+         (real (uiop:subpathname dir "libthing.4.dylib"))
+         (link (uiop:subpathname dir "libthing.dylib"))
+         (other (uiop:subpathname dir "libother.dylib")))
+    (unwind-protect
+         (progn
+           (dolist (file (list real other))
+             (with-open-file (s file :direction :output :if-exists :supersede)
+               (write-string "not really a library" s)))
+           (sb-posix:symlink (uiop:native-namestring real) (uiop:native-namestring link))
+           (let* ((manifest (list (uiop:native-namestring (probe-file real))))
+                  (by-link (shared-object (uiop:native-namestring link)))
+                  (not-bundled (shared-object (uiop:native-namestring other)))
+                  (system (shared-object "/usr/lib/libSystem.B.dylib"))
+                  (missing (shared-object "libfound-by-dyld.dylib"))
+                  (not-saved (shared-object (uiop:native-namestring link) :dont-save t))
+                  (already (shared-object "@executable_path/../Frameworks/libthing.4.dylib"))
+                  (objects (list by-link not-bundled system missing not-saved already))
+                  (changed (app::repoint-shared-objects manifest objects)))
+             ;; The one that is bundled, by the name its copy will have.
+             (is= "@executable_path/../Frameworks/libthing.4.dylib"
+                  (sb-alien::shared-object-namestring by-link))
+             (is= 1 (length changed))
+             (is= (uiop:native-namestring link) (car (first changed)))
+             (is= "@executable_path/../Frameworks/libthing.4.dylib" (cdr (first changed)))
+             ;; Its pathname is how SBCL knows it has this library already, so
+             ;; that is left alone.
+             (is= (pathname (uiop:native-namestring link))
+                  (sb-alien::shared-object-pathname by-link))
+             ;; And nothing else is touched.
+             (is= (uiop:native-namestring other)
+                  (sb-alien::shared-object-namestring not-bundled))
+             (is= "/usr/lib/libSystem.B.dylib" (sb-alien::shared-object-namestring system))
+             (is= "libfound-by-dyld.dylib" (sb-alien::shared-object-namestring missing))
+             (is= (uiop:native-namestring link)
+                  (sb-alien::shared-object-namestring not-saved))
+             (is= "@executable_path/../Frameworks/libthing.4.dylib"
+                  (sb-alien::shared-object-namestring already))
+             ;; Done twice, it does nothing the second time.
+             (is= '() (app::repoint-shared-objects manifest objects))))
+      (uiop:delete-directory-tree dir :validate t :if-does-not-exist :ignore))))
+
+#+sbcl
+(deftest with-nothing-bundled-nothing-is-repointed
+  (let ((object (shared-object "/opt/homebrew/lib/libnothing.dylib")))
+    (is= '() (app::repoint-shared-objects '() (list object)))
+    (is= "/opt/homebrew/lib/libnothing.dylib"
+         (sb-alien::shared-object-namestring object))))
+
 (deftest system-library-detection
   (is (app::system-library-p "/usr/lib/libSystem.B.dylib"))
   (is (app::system-library-p "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation"))

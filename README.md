@@ -92,6 +92,21 @@ No C launcher, and so still no C toolchain in the build.
 `Contents/Frameworks/` onto `cffi:*foreign-library-directories*`. CFFI then
 resolves libraries to absolute paths inside the bundle.
 
+**A library that is open when the image is dumped is reopened from the
+bundle.** SBCL reopens such a library itself at startup, before any Lisp of
+yours or of this library runs, by the path it was opened at — which in the
+build was Homebrew's. Left alone, the application would use Homebrew's copy
+and ignore its own, and on a Mac without Homebrew it would not start. So just
+before the dump, each open library that is being bundled has its path changed
+to `@executable_path/../Frameworks/<name>`, which `dlopen` expands and which
+is right wherever the bundle is moved to. The build says which:
+
+```
+; /opt/homebrew/opt/openssl/lib/libssl.dylib will be opened as @executable_path/../Frameworks/libssl.4.dylib
+```
+
+Check it in a running application with `lsof -p <pid> | grep dylib`.
+
 ## Layout produced
 
 ```
@@ -262,6 +277,13 @@ parsers are covered against captured `otool` output.
   listed in `:bundle-foreign-libraries`.
 - **Two dylibs with the same basename** will collide in `Frameworks/`; the
   build errors rather than silently picking one.
+- **The core runs in its bundle and nowhere else** once it has a bundled
+  library: `@executable_path` is the runtime in `Contents/MacOS`. Started some
+  other way — `sbcl --core Contents/Resources/sbcl.core` — it will not find
+  those libraries.
+- **A library opened by a bare name**, found by dyld on its own search path
+  rather than at a path, is neither bundled nor repointed: there is no file to
+  copy. Open it by path, or list it in `:bundle-foreign-libraries`.
 - SBCL only. The child-process invocation and `sb-ext:posix-environ` are
   SBCL-specific; `macos-app:*child-lisp*` and `*child-lisp-options*` let you
   point at a different runtime.

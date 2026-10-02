@@ -5,6 +5,12 @@
 ;;;; Instead every bundled dylib gets its inter-library references rewritten
 ;;;; to @loader_path/<name>, and RUNTIME.LISP pushes Contents/Frameworks onto
 ;;;; cffi:*foreign-library-directories* so CFFI finds them by absolute path.
+;;;;
+;;;; That covers a library opened after the application starts.  A library that
+;;;; is open when the image is dumped is another matter: SBCL opens it again
+;;;; itself on the way up, before any of this code runs, from the path it was
+;;;; opened at in the build.  REPOINT-SHARED-OBJECTS changes that path, in the
+;;;; child and just before the dump, to the copy the bundle will carry.
 
 (in-package #:asdf-macos-app)
 
@@ -60,6 +66,56 @@
           (let ((*package* (find-package :keyword))
                 (*read-eval* nil))
             (read s nil nil)))))))
+
+;;; SBCL keeps every shared object it has open in SB-ALIEN::*SHARED-OBJECTS*,
+;;; each with the namestring it was opened by, and a dumped image opens each of
+;;; them again at startup by that namestring.  For a library that came from
+;;; Homebrew that is a path like /opt/homebrew/opt/openssl/lib/libssl.dylib, so
+;;; the application used Homebrew's copy and never the one in its own
+;;; Frameworks -- and on a Mac with no Homebrew it did not start at all, because
+;;; a shared object that cannot be reopened is an error before the toplevel.
+;;;
+;;; dlopen expands @executable_path, and the executable is Contents/MacOS/<exe>,
+;;; so the copy in Contents/Frameworks has a name that is right wherever the
+;;; bundle is put.  Only the namestring is changed.  The pathname is how SBCL
+;;; recognises a library it already has, so code that asks for the original
+;;; path again at run time still finds this object, and reopens the bundle's copy.
+
+(defparameter +bundled-library-prefix+ "@executable_path/../Frameworks/"
+  "Where a bundled library is, as dlopen is to be told at run time.")
+
+(defun bundled-library-reference (library)
+  "The name to open the bundle's copy of LIBRARY by.  LIBRARY is the file's
+real path: the copy keeps that file's name, which for a library reached through
+a symbolic link is not the name it was opened by."
+  (concatenate 'string +bundled-library-prefix+ (file-namestring library)))
+
+(defun real-library-path (namestring)
+  "The native real path of the library opened as NAMESTRING, or NIL if there
+is no such file -- a name dyld found on its own search path, say."
+  (let ((truename (ignore-errors (probe-file namestring))))
+    (and truename (uiop:native-namestring truename))))
+
+(defun repoint-shared-objects (libraries
+                               &optional (objects #+sbcl sb-alien::*shared-objects*
+                                                  #-sbcl nil))
+  "Have each of OBJECTS that is one of LIBRARIES reopened from the bundle.
+
+LIBRARIES is the manifest: the real paths of the libraries that will be copied
+into Contents/Frameworks.  A shared object that is not among them -- a system
+library, or one already named relative to the bundle -- is left as it is.
+Returns a list of (old-namestring . new-namestring) for the ones changed."
+  #-sbcl (declare (ignore libraries objects))
+  #+sbcl
+  (loop for object in objects
+        for old = (sb-alien::shared-object-namestring object)
+        for real = (and (not (sb-alien::shared-object-dont-save object))
+                        (not (uiop:string-prefix-p "@" old))
+                        (real-library-path old))
+        when (and real (member real libraries :test #'string=))
+          collect (let ((new (bundled-library-reference real)))
+                    (setf (sb-alien::shared-object-namestring object) new)
+                    (cons old new))))
 
 ;;; ---- in the parent, after the dump ---------------------------------
 
