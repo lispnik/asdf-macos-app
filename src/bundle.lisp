@@ -22,6 +22,7 @@
   document-types                        ; list of DSL dicts
   extra-plist                           ; alist of key -> DSL value
   resources                             ; extra files/dirs for Contents/Resources
+  (contribs-p t)                        ; copy SBCL's contrib/ into Resources/sbcl/
   (log-p t)                             ; redirect stdio to a log file at runtime
   (log-max-bytes 1048576)               ; rotate the log past this size
   foreign-libraries                     ; extra dylibs to bundle
@@ -70,6 +71,18 @@ file in MacOS/ as nested code and refuses a bundle containing one it cannot
 sign: `code object is not signed at all / In subcomponent: .../MacOS/sbcl.core'.
 That holds however the file is permissioned."
   (uiop:subpathname (resources-dir spec) +core-name+))
+
+(defparameter +contrib-home+ "sbcl/"
+  "Where the bundle's SBCL home is, relative to Contents/Resources: the
+contribs go in its contrib/, which is where REQUIRE looks.
+
+Not Contents/lib/sbcl/, although that is where the runtime would find them
+unaided (../lib/sbcl/ from MacOS/): codesign refuses anything in Contents/
+that is not one of the directories it knows, as unsealed contents in the bundle
+root.  So they are a sealed resource, and %APP-TOPLEVEL points SBCL at them.")
+
+(defun contrib-home (spec)
+  (uiop:subpathname (resources-dir spec) +contrib-home+))
 
 (defun core-link-path (spec)
   "The symbolic link in MacOS/ that points at the core in Resources/.
@@ -300,7 +313,8 @@ landing on one of these would either be clobbered later or clobber something
 the bundle needs."
   (list (format nil "~a.icns" (spec-executable-name spec))
         "entitlements.plist"
-        "foreign-libraries.sexp"))
+        "foreign-libraries.sexp"
+        (string-right-trim "/" +contrib-home+)))
 
 (defun check-resource-destination (spec relative seen)
   "Signal unless RELATIVE names a fresh, unreserved location inside Resources."
@@ -345,6 +359,25 @@ copied under its own name, or (path . \"relative/destination\")."
                                  (file-namestring source)))
           collect (copy-tree-into source
                                   (check-resource-destination spec relative seen)))))
+
+(defun building-sbcl-contribs ()
+  "The contrib/ directory of the SBCL doing the build, or NIL.  The same SBCL
+whose runtime INSTALL-RUNTIME copies, so the fasls are of its version: a fasl
+from any other SBCL refuses to load."
+  (let ((home (sb-int:sbcl-homedir-pathname)))
+    (and home (uiop:directory-exists-p (uiop:subpathname home "contrib/")))))
+
+(defun install-contribs (spec)
+  "Copy SBCL's contribs into the bundle, so that (REQUIRE :SB-ROTATE-BYTE) --
+and any system that depends on a contrib not already in the image -- works in
+the application as it does in the SBCL that built it.  Without them REQUIRE
+says `Don't know how to REQUIRE' for every contrib the image lacks."
+  (when (spec-contribs-p spec)
+    (let ((source (building-sbcl-contribs)))
+      (if source
+          (copy-tree-into source (uiop:subpathname (contrib-home spec) "contrib/"))
+          (note "No contrib/ under ~a; the bundle will have none."
+                (sb-int:sbcl-homedir-pathname))))))
 
 (defun icon-cache-path (spec)
   "Converted icons are cached beside the finished bundle so that rebuilding

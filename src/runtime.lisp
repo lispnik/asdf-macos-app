@@ -79,6 +79,16 @@ app that logs on every launch grows a file forever.")
         (when (and var (boundp var))
           (pushnew dir (symbol-value var) :test #'equal))))))
 
+(defun use-bundled-contribs ()
+  "Make Contents/Resources/sbcl/ SBCL's home, if the bundle has contribs there.
+
+SBCL finds its home at startup, relative to the runtime: ../lib/sbcl/ from
+Contents/MacOS/, which a bundle cannot have (see +CONTRIB-HOME+).  Left alone it
+finds nothing, and REQUIRE has nowhere to look."
+  (let ((home (bundle-resource "sbcl/")))
+    (when (and home (uiop:directory-exists-p (uiop:subpathname home "contrib/")))
+      (setf sb-sys::*sbcl-homedir-pathname* home))))
+
 (defparameter +log-override-variable+ "MACOS_APP_LOG"
   "Environment variable that redirects the app's log. Useful for debugging a
 shipped bundle, and for tests that must not write to the real home directory.")
@@ -113,6 +123,7 @@ calls the user's entry point."
   ;; Finder launches with cwd = /
   (setf *default-pathname-defaults* (user-homedir-pathname))
   (register-foreign-directory)
+  (use-bundled-contribs)
   (let ((log (and *log-to-file* (running-in-bundle-p) (app-log-file))))
     (flet ((go! ()
              (setf uiop:*command-line-arguments*

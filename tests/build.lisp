@@ -419,6 +419,28 @@ build that is complete is allowed through and there is no message to return."
       (is (null (probe-file real-log))))))
 
 ;;; ------------------------------------------------------------------
+;;; :bundle-sbcl-contribs
+
+(deftest contribs-are-shipped-and-required-from-the-bundle
+  "The bundle's SBCL home has no contrib/ of its own, so without these REQUIRE
+of a contrib the image lacks fails: `Don't know how to REQUIRE sb-rotate-byte'."
+  (with-fixture (dir)
+    (let ((bundle (build-fixture)))
+      (is (probe-file (uiop:subpathname
+                       bundle "Contents/Resources/sbcl/contrib/sb-rotate-byte.fasl")))
+      (let ((output (run-bundle bundle dir)))
+        (is (search "CONTRIB-OK" output))
+        (is (not (search "CONTRIB-MISSING" output)))))))
+
+(deftest contribs-can-be-left-out
+  (with-fixture (dir)
+    (replace-in-file (fixture-asd dir) ":bundle-log t"
+                     ":bundle-sbcl-contribs nil :bundle-log t")
+    (let ((bundle (build-fixture)))
+      (is (not (probe-file (uiop:subpathname bundle "Contents/Resources/sbcl/"))))
+      (is (search "CONTRIB-MISSING" (run-bundle bundle dir))))))
+
+;;; ------------------------------------------------------------------
 ;;; :bundle-resources
 
 (deftest resources-are-copied-into-the-bundle

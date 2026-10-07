@@ -29,6 +29,7 @@
    (doc-types     :initarg :bundle-document-types :initform nil :reader app-doc-types)
    (extra-plist   :initarg :bundle-info-plist    :initform nil :reader app-extra-plist)
    (resources     :initarg :bundle-resources     :initform nil :reader app-resources)
+   (contribs      :initarg :bundle-sbcl-contribs :initform t   :reader app-contribs-p)
    (log           :initarg :bundle-log           :initform t   :reader app-log-p)
    (log-max       :initarg :bundle-log-max-bytes :initform 1048576
                   :reader app-log-max-bytes)
@@ -107,6 +108,7 @@ child Lisp performs; it never returns."))
                                 (cons (resolve (car entry)) (cdr entry))
                                 (resolve entry))))
                         (app-resources system))
+     :contribs-p (app-contribs-p system)
      :log-p (app-log-p system)
      :log-max-bytes (app-log-max-bytes system)
      :foreign-libraries (mapcar (lambda (l)
@@ -576,6 +578,7 @@ lets the runtime find its core with no arguments; see CORE-LINK-PATH."
            (write-pkginfo spec)
            (install-icon spec)
            (install-resources spec)
+           (install-contribs spec)
            (if previous
                (reuse-image spec previous)
                (dump-in-child s spec))

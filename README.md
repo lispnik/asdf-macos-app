@@ -144,6 +144,7 @@ All are `defsystem` keywords on `:macos-app-system`.
 | `:bundle-document-types` | none | list of plist-DSL dicts |
 | `:bundle-info-plist` | none | alist merged over the generated keys |
 | `:bundle-resources` | none | files/dirs copied into `Contents/Resources`; an entry is a path or `(path . "relative/destination")` |
+| `:bundle-sbcl-contribs` | `t` | copy the building SBCL's `contrib/` into `Contents/Resources/sbcl/`, so `require` works in the app |
 | `:bundle-log` | `t` | redirect the app's stdio to a log file at runtime |
 | `:bundle-log-max-bytes` | 1 MB | rotate the log past this; `nil` disables |
 | `:bundle-foreign-libraries` | none | extra dylibs beyond what CFFI reports |
