@@ -6,8 +6,11 @@
   :license "MIT"
   :version "0.2.0"
   :depends-on (#+sbcl (:require "sb-posix"))
-  :serial t
+  ;; On the module, not here: :SERIAL T on the system orders only its direct
+  ;; components -- the one module -- and left the files inside unordered, so a
+  ;; change to a structure in bundle.lisp did not recompile sign.lisp.
   :components ((:module "src"
+                :serial t
                 :components ((:file "package")
                              (:file "plist")
                              (:file "runtime")
@@ -20,8 +23,8 @@
 (defsystem "asdf-macos-app/tests"
   :description "Test suite for asdf-macos-app."
   :depends-on ("asdf-macos-app")
-  :serial t
   :components ((:module "tests"
+                :serial t
                 :components ((:file "framework")
                              (:file "unit")
                              (:file "build")
