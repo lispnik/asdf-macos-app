@@ -533,3 +533,35 @@ Load command 16
       ;; xcrun is invoked only by NOTARIZE, which is not part of a build
       (unless (string= tool "/usr/bin/xcrun")
         (is (member tool declared :test #'string=))))))
+
+;;; ------------------------------------------------------------------
+;;; the runtime
+
+(deftest no-bundle-runtime-means-the-building-sbcls
+  (is (equal sb-ext:*runtime-pathname*
+             (app::runtime-source (app::make-app-spec :identifier "x")))))
+
+(deftest a-bundle-runtime-from-this-build-is-accepted
+  ;; A copy of the running runtime is the simplest file that carries this
+  ;; build's ID, which is all the check looks at.
+  (uiop:with-temporary-file (:pathname copy :keep nil)
+    (uiop:copy-file sb-ext:*runtime-pathname* copy)
+    (is (equal copy (app::runtime-source
+                     (app::make-app-spec :identifier "x" :runtime copy))))))
+
+(deftest a-bundle-runtime-from-another-build-is-refused
+  ;; The core would refuse it at launch; refusing it at build time is the
+  ;; difference between a failed build and a bundle that never starts.
+  (uiop:with-temporary-file (:pathname other :stream out :keep nil
+                             :element-type '(unsigned-byte 8))
+    (write-sequence (make-array 4096 :element-type '(unsigned-byte 8)
+                                     :initial-element 0)
+                    out)
+    :close-stream
+    (signals app:app-build-error (app::runtime-source
+                    (app::make-app-spec :identifier "x" :runtime other)))))
+
+(deftest a-missing-bundle-runtime-is-refused
+  (signals app:app-build-error (app::runtime-source
+                  (app::make-app-spec :identifier "x"
+                                      :runtime #p"/nonexistent/sbcl"))))

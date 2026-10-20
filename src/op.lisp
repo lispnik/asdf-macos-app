@@ -33,6 +33,7 @@
    (log           :initarg :bundle-log           :initform t   :reader app-log-p)
    (log-max       :initarg :bundle-log-max-bytes :initform 1048576
                   :reader app-log-max-bytes)
+   (runtime       :initarg :bundle-runtime       :initform nil :reader app-runtime)
    (foreign-libs  :initarg :bundle-foreign-libraries
                   :initform nil :reader app-foreign-libraries)
    (output-dir    :initarg :bundle-output-directory
@@ -108,6 +109,8 @@ child Lisp performs; it never returns."))
                                 (cons (resolve (car entry)) (cdr entry))
                                 (resolve entry))))
                         (app-resources system))
+     :runtime (let ((r (app-runtime system)))
+                (and r (merge-pathnames r (asdf:system-source-directory system))))
      :contribs-p (app-contribs-p system)
      :log-p (app-log-p system)
      :log-max-bytes (app-log-max-bytes system)
@@ -531,6 +534,49 @@ this system has been rebuilt."
            (when (spec-compression spec)
              (list :compression (spec-compression spec))))))
 
+(defun running-build-id ()
+  "The build ID compiled into the running SBCL's runtime.  A core starts only
+under a runtime with the same one."
+  #+sbcl (sb-alien:cast (sb-alien:extern-alien "build_id" (array char 1))
+                        sb-alien:c-string)
+  #-sbcl nil)
+
+(defun file-contains-octets-p (pathname octets)
+  (let ((data (with-open-file (in pathname :element-type '(unsigned-byte 8))
+                (let ((v (make-array (file-length in)
+                                     :element-type '(unsigned-byte 8))))
+                  (read-sequence v in)
+                  v))))
+    (and (search octets data) t)))
+
+(defun runtime-source (spec)
+  "The runtime to copy into MacOS/: the building SBCL's own, unless the spec
+names a relinked one.
+
+A relinked runtime exists because the stock one links nothing but libSystem.
+Under the App Sandbox that is fatal: AppKit loaded later by dlopen is refused
+the mach-lookup of com.apple.coreservices.launchservicesd, and
++[NSApplication sharedApplication] aborts.  CoreFoundation linked at load time
+avoids it; CoreFoundation dlopened first thing in main() does not.  Neither SBCL
+nor its header padding can supply that load command, so the runtime has to be
+relinked from the objects of the SBCL build that dumps the core.
+
+THE SAME BUILD, and checked here rather than at launch: a core refuses a runtime
+with another build ID, and the refusal would otherwise first be seen by whoever
+double-clicks the application."
+  (let ((runtime (spec-runtime spec)))
+    (if (null runtime)
+        sb-ext:*runtime-pathname*
+        (let ((id (running-build-id)))
+          (unless (probe-file runtime)
+            (barf "No runtime at ~a." (uiop:native-namestring runtime)))
+          (unless (and id (file-contains-octets-p
+                           runtime (map '(vector (unsigned-byte 8)) #'char-code id)))
+            (barf "The runtime at ~a is not from this SBCL's build (~a); ~
+                   a core dumped here would refuse to start under it."
+                  (uiop:native-namestring runtime) id))
+          runtime))))
+
 (defun install-runtime (spec)
   "Put the SBCL runtime in MacOS/ and link the core beside it.
 
@@ -544,7 +590,7 @@ lets the runtime find its core with no arguments; see CORE-LINK-PATH."
       (barf "No core at ~a to build a runnable bundle around."
             (uiop:native-namestring (core-path spec))))
     (run (list "/bin/cp" "-p"
-               (uiop:native-namestring sb-ext:*runtime-pathname*)
+               (uiop:native-namestring (runtime-source spec))
                (uiop:native-namestring exe)))
     ;; -p preserved the runtime's mode, which is read-only in a Homebrew
     ;; install; the copy has to be writable for codesign to sign it in place.
