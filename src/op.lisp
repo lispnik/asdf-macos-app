@@ -34,6 +34,8 @@
    (log-max       :initarg :bundle-log-max-bytes :initform 1048576
                   :reader app-log-max-bytes)
    (runtime       :initarg :bundle-runtime       :initform nil :reader app-runtime)
+   (runtime-frameworks :initarg :bundle-runtime-frameworks :initform nil
+                       :reader app-runtime-frameworks)
    (foreign-libs  :initarg :bundle-foreign-libraries
                   :initform nil :reader app-foreign-libraries)
    (output-dir    :initarg :bundle-output-directory
@@ -111,6 +113,7 @@ child Lisp performs; it never returns."))
                         (app-resources system))
      :runtime (let ((r (app-runtime system)))
                 (and r (merge-pathnames r (asdf:system-source-directory system))))
+     :runtime-frameworks (app-runtime-frameworks system)
      :contribs-p (app-contribs-p system)
      :log-p (app-log-p system)
      :log-max-bytes (app-log-max-bytes system)
@@ -549,6 +552,22 @@ under a runtime with the same one."
                   v))))
     (and (search octets data) t)))
 
+(defun check-build-id (runtime)
+  "Refuse RUNTIME unless it carries the running SBCL's build ID.
+
+Checked at build time rather than at launch: a core refuses a runtime with
+another build ID, and the refusal would otherwise first be seen by whoever
+double-clicks the application."
+  (let ((id (running-build-id)))
+    (unless (probe-file runtime)
+      (barf "No runtime at ~a." (uiop:native-namestring runtime)))
+    (unless (and id (file-contains-octets-p
+                     runtime (map '(vector (unsigned-byte 8)) #'char-code id)))
+      (barf "The runtime at ~a is not from this SBCL's build (~a); ~
+             a core dumped here would refuse to start under it."
+            (uiop:native-namestring runtime) id))
+    runtime))
+
 (defun runtime-source (spec)
   "The runtime to copy into MacOS/: the building SBCL's own, unless the spec
 names a relinked one.
@@ -559,39 +578,96 @@ the mach-lookup of com.apple.coreservices.launchservicesd, and
 +[NSApplication sharedApplication] aborts.  CoreFoundation linked at load time
 avoids it; CoreFoundation dlopened first thing in main() does not.  Neither SBCL
 nor its header padding can supply that load command, so the runtime has to be
-relinked from the objects of the SBCL build that dumps the core.
-
-THE SAME BUILD, and checked here rather than at launch: a core refuses a runtime
-with another build ID, and the refusal would otherwise first be seen by whoever
-double-clicks the application."
+relinked from the objects of the SBCL build that dumps the core -- here by the
+caller, or by LINK-RUNTIME from SBCL's own linkable runtime."
   (let ((runtime (spec-runtime spec)))
-    (if (null runtime)
-        sb-ext:*runtime-pathname*
-        (let ((id (running-build-id)))
-          (unless (probe-file runtime)
-            (barf "No runtime at ~a." (uiop:native-namestring runtime)))
-          (unless (and id (file-contains-octets-p
-                           runtime (map '(vector (unsigned-byte 8)) #'char-code id)))
-            (barf "The runtime at ~a is not from this SBCL's build (~a); ~
-                   a core dumped here would refuse to start under it."
-                  (uiop:native-namestring runtime) id))
-          runtime))))
+    (if runtime
+        (check-build-id runtime)
+        sb-ext:*runtime-pathname*)))
+
+(defun read-make-variables (file)
+  "The NAME=VALUE lines of FILE, as an alist.  sbcl.mk is nothing else."
+  (with-open-file (in file)
+    (loop for line = (read-line in nil)
+          for sign = (and line (position #\= line))
+          while line
+          when (and sign (plusp sign))
+            collect (cons (subseq line 0 sign) (subseq line (1+ sign))))))
+
+(defun words (string)
+  (remove "" (uiop:split-string string :separator '(#\Space #\Tab))
+          :test #'string=))
+
+(defun runtime-link-command (frameworks output
+                             &key (home (sb-int:sbcl-homedir-pathname)))
+  "The argv that links SBCL's runtime against FRAMEWORKS into OUTPUT, from the
+linkable runtime the running SBCL was installed with.
+
+SBCL built --with-sb-linkable-runtime installs its runtime's objects into its
+home beside sbcl.mk, which records how to link them.  They are the objects of
+the running runtime, so the result has its build ID and the core starts under it
+-- no source tree, and no second build.  Without them sbcl.mk is still installed
+but names no LIBSBCL, and that is what is refused."
+  (let* ((mk (and home (uiop:subpathname home "sbcl.mk")))
+         (vars (and mk (probe-file mk) (read-make-variables mk)))
+         (objects (words (or (cdr (assoc "LIBSBCL" vars :test #'string=)) ""))))
+    (flet ((var (name) (words (or (cdr (assoc name vars :test #'string=)) "")))
+           (installed (name) (uiop:native-namestring (uiop:subpathname home name))))
+      (when (or (null objects)
+                (notevery (lambda (o) (probe-file (uiop:subpathname home o))) objects))
+        (barf "This SBCL has no linkable runtime~@[ in ~a~], so its runtime cannot ~
+               be linked against ~{~a~^, ~}.  Rebuild SBCL with ~
+               --with-sb-linkable-runtime, or give :BUNDLE-RUNTIME a runtime ~
+               relinked from its build tree."
+              (and home (uiop:native-namestring home)) frameworks))
+      (dolist (f frameworks)
+        (unless (and (stringp f) (plusp (length f))
+                     (every (lambda (c) (or (alphanumericp c) (find c "_-+."))) f))
+          (barf ":BUNDLE-RUNTIME-FRAMEWORKS wants framework names such as ~
+                 \"CoreFoundation\", not ~s." f)))
+      (append (or (var "CC") (list "cc"))
+              (var "LINKFLAGS")
+              (list "-o" (uiop:native-namestring output))
+              ;; USE_LIBSBCL names the objects relative to the build directory,
+              ;; and on Darwin as -Wl,-force_load libsbcl.a; each object becomes
+              ;; its installed path and the flags pass through.
+              (mapcar (lambda (w) (if (member w objects :test #'string=) (installed w) w))
+                      (or (var "USE_LIBSBCL") objects))
+              (var "LIBS")
+              (loop for f in frameworks append (list "-framework" f))))))
+
+(defun check-runtime-choice (spec)
+  "Everything about the runtime that can be refused before the image is dumped,
+which takes a minute that a refusal afterwards would waste."
+  (when (spec-runtime-frameworks spec)
+    (when (spec-runtime spec)
+      (barf "Give :BUNDLE-RUNTIME or :BUNDLE-RUNTIME-FRAMEWORKS, not both: one ~
+             runtime is copied, the other linked."))
+    (runtime-link-command (spec-runtime-frameworks spec) "/dev/null"))
+  (runtime-source spec))
+
+(defun link-runtime (spec exe)
+  (run (runtime-link-command (spec-runtime-frameworks spec) exe))
+  (check-build-id exe))
 
 (defun install-runtime (spec)
   "Put the SBCL runtime in MacOS/ and link the core beside it.
 
 The runtime is copied rather than dumped into, so it stays exactly the Mach-O
-the SBCL build produced -- which is a file codesign accepts.  The link is what
-lets the runtime find its core with no arguments; see CORE-LINK-PATH."
+the SBCL build produced -- which is a file codesign accepts -- or with
+:BUNDLE-RUNTIME-FRAMEWORKS linked afresh from that build's objects.  The link is
+what lets the runtime find its core with no arguments; see CORE-LINK-PATH."
   (let ((exe (executable-path spec))
         (link (core-link-path spec)))
     (ensure-directories-exist exe)
     (unless (probe-file (core-path spec))
       (barf "No core at ~a to build a runnable bundle around."
             (uiop:native-namestring (core-path spec))))
-    (run (list "/bin/cp" "-p"
-               (uiop:native-namestring (runtime-source spec))
-               (uiop:native-namestring exe)))
+    (if (spec-runtime-frameworks spec)
+        (link-runtime spec exe)
+        (run (list "/bin/cp" "-p"
+                   (uiop:native-namestring (runtime-source spec))
+                   (uiop:native-namestring exe))))
     ;; -p preserved the runtime's mode, which is read-only in a Homebrew
     ;; install; the copy has to be writable for codesign to sign it in place.
     (run (list "/bin/chmod" "755" (uiop:native-namestring exe)))
@@ -614,6 +690,7 @@ lets the runtime find its core with no arguments; see CORE-LINK-PATH."
          (previous (current-image s spec)))
     ;; Everything is assembled off to one side; a failed build must not leave a
     ;; half-written .app that Finder will happily try to launch.
+    (check-runtime-choice spec)
     (setf (spec-root spec) staging)
     (let ((committed nil))
       (unwind-protect

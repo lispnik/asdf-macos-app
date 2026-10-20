@@ -565,3 +565,90 @@ Load command 16
   (signals app:app-build-error (app::runtime-source
                   (app::make-app-spec :identifier "x"
                                       :runtime #p"/nonexistent/sbcl"))))
+
+;;; ------------------------------------------------------------------
+;;; linking the runtime from SBCL's linkable runtime
+
+(defmacro with-sbcl-home ((home &key mk objects) &body body)
+  "A fake SBCL home holding an sbcl.mk with the lines MK and empty files named
+OBJECTS -- the shape of an installed linkable runtime, or of one that is not."
+  `(uiop:with-temporary-file (:pathname marker :keep nil)
+     (let ((,home (uiop:ensure-directory-pathname
+                   (format nil "~a.d" (uiop:native-namestring marker)))))
+       (ensure-directories-exist ,home)
+       (unwind-protect
+            (progn
+              (with-open-file (out (uiop:subpathname ,home "sbcl.mk")
+                                   :direction :output :if-exists :supersede)
+                (format out "~{~a~%~}" ,mk))
+              (dolist (o ,objects)
+                (with-open-file (out (uiop:subpathname ,home o)
+                                     :direction :output :if-exists :supersede)))
+              ,@body)
+         (uiop:delete-directory-tree ,home :validate t)))))
+
+(defparameter +darwin-mk+
+  '("CC=cc" "LINKFLAGS=-g -dynamic -twolevel_namespace -arch arm64"
+    "LIBS=-lc -ldl -lpthread  -lm"
+    "LIBSBCL=libsbcl.a" "USE_LIBSBCL=-Wl,-force_load libsbcl.a"))
+
+(deftest make-variables-split-at-the-first-equals-sign
+  (uiop:with-temporary-file (:pathname mk :stream out :keep nil)
+    (format out "CC=cc~%CFLAGS=-DX=1 -O3~%~%not a variable~%")
+    :close-stream
+    (is= '(("CC" . "cc") ("CFLAGS" . "-DX=1 -O3"))
+         (app::read-make-variables mk))))
+
+(deftest the-link-uses-sbcls-own-line-plus-the-frameworks
+  (with-sbcl-home (home :mk +darwin-mk+ :objects '("libsbcl.a"))
+    (let ((argv (app::runtime-link-command '("CoreFoundation") "/out/sbcl"
+                                           :home home)))
+      (is (string= "cc" (first argv)))
+      (is (search '("-o" "/out/sbcl") argv :test #'string=))
+      ;; the object by its installed path, still after its -force_load
+      (is (search (list "-Wl,-force_load"
+                        (uiop:native-namestring (uiop:subpathname home "libsbcl.a")))
+                  argv :test #'string=))
+      (is (search '("-lc" "-ldl" "-lpthread" "-lm") argv :test #'string=))
+      (is (equal '("-framework" "CoreFoundation") (last argv 2))))))
+
+(deftest an-sbcl-without-a-linkable-runtime-is-refused
+  ;; sbcl.mk is installed either way; only a linkable build names LIBSBCL.
+  (with-sbcl-home (home :mk (butlast +darwin-mk+ 2))
+    (signals app:app-build-error
+      (app::runtime-link-command '("CoreFoundation") "/out/sbcl" :home home))))
+
+(deftest a-linkable-runtime-with-its-objects-missing-is-refused
+  (with-sbcl-home (home :mk +darwin-mk+)
+    (signals app:app-build-error
+      (app::runtime-link-command '("CoreFoundation") "/out/sbcl" :home home))))
+
+(deftest a-framework-must-be-a-name
+  (with-sbcl-home (home :mk +darwin-mk+ :objects '("libsbcl.a"))
+    (signals app:app-build-error
+      (app::runtime-link-command '("CoreFoundation -lfoo") "/out/sbcl" :home home))
+    (signals app:app-build-error
+      (app::runtime-link-command '(:core-foundation) "/out/sbcl" :home home))))
+
+(deftest a-runtime-is-copied-or-linked-not-both
+  (signals app:app-build-error
+    (app::check-runtime-choice
+     (app::make-app-spec :identifier "x" :runtime sb-ext:*runtime-pathname*
+                         :runtime-frameworks '("CoreFoundation")))))
+
+(deftest the-running-sbcl-links-or-says-why-not
+  "Against the real SBCL running the suite: one built --with-sb-linkable-runtime
+links a runtime that loads CoreFoundation and carries its build ID; any other is
+refused before anything is dumped."
+  (let ((spec (app::make-app-spec :identifier "x"
+                                  :runtime-frameworks '("CoreFoundation")))
+        (vars (ignore-errors
+               (app::read-make-variables
+                (uiop:subpathname (sb-int:sbcl-homedir-pathname) "sbcl.mk")))))
+    (if (assoc "LIBSBCL" vars :test #'string=)
+        (uiop:with-temporary-file (:pathname exe :keep nil)
+          (app::link-runtime spec exe)
+          (is (search "CoreFoundation.framework"
+                      (app::run (list "otool" "-L" (uiop:native-namestring exe)))))
+          (is (app::check-build-id exe)))
+        (signals app:app-build-error (app::check-runtime-choice spec)))))

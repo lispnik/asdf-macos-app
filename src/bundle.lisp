@@ -23,6 +23,7 @@
   extra-plist                           ; alist of key -> DSL value
   resources                             ; extra files/dirs for Contents/Resources
   runtime                               ; NIL = the building SBCL's, else a relinked one
+  runtime-frameworks                    ; frameworks to link the runtime against, from sbcl.mk
   (contribs-p t)                        ; copy SBCL's contrib/ into Resources/sbcl/
   (log-p t)                             ; redirect stdio to a log file at runtime
   (log-max-bytes 1048576)               ; rotate the log past this size
