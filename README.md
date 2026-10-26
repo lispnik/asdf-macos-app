@@ -151,6 +151,7 @@ All are `defsystem` keywords on `:macos-app-system`.
 | `:bundle-sbcl-contribs` | `t` | copy the building SBCL's `contrib/` into `Contents/Resources/sbcl/`, so `require` works in the app |
 | `:bundle-runtime` | the building SBCL's | a relinked SBCL runtime to copy into `Contents/MacOS/` instead; must be from the same SBCL build. The App Sandbox needs one linked with `-framework CoreFoundation`, or `sharedApplication` aborts |
 | `:bundle-runtime-frameworks` | none | frameworks to link the runtime against, e.g. `("CoreFoundation")` for the App Sandbox. Linked from the building SBCL's own objects, so it needs an SBCL built `--with-sb-linkable-runtime`; any other is refused before the image is dumped. Exclusive with `:bundle-runtime` |
+| `:bundle-strip-runtime` | `nil` | `strip -S` the runtime in `Contents/MacOS/`, removing the debug map's absolute paths into SBCL's build tree (`/Users/<you>/...`); symbols and build ID stay |
 | `:bundle-log` | `t` | redirect the app's stdio to a log file at runtime |
 | `:bundle-log-max-bytes` | 1 MB | rotate the log past this; `nil` disables |
 | `:bundle-foreign-libraries` | none | extra dylibs beyond what CFFI reports |

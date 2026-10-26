@@ -71,6 +71,7 @@ muffle warnings, and these are things the person running the build must see."
 
 (defparameter +required-tools+
   '("/usr/bin/otool" "/usr/bin/install_name_tool"   ; Xcode command line tools
+    "/usr/bin/strip"
     "/usr/bin/codesign" "/usr/bin/plutil"           ; base system
     "/usr/bin/sips" "/usr/bin/iconutil"             ; icon conversion
     "/usr/bin/ditto")                               ; notarisation

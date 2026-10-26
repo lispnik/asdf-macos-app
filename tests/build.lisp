@@ -579,3 +579,24 @@ of a contrib the image lacks fails: `Don't know how to REQUIRE sb-rotate-byte'."
             (is (null (probe-file
                        (uiop:subpathname
                         bundle "Contents/Resources/entitlements.plist")))))))))
+
+(deftest a-stripped-runtime-is-signed-and-runs
+  "Stripping happens before signing, so the signature strip invalidates is the
+one replaced -- and the bundle still starts and still finds its dependency."
+  (with-fixture (dir)
+    (replace-in-file (fixture-asd dir)
+                     ":bundle-log t"
+                     ":bundle-log t :bundle-strip-runtime t :code-signing-identity \"-\"")
+    (clear-fixture-systems)
+    (let* ((bundle (build-fixture))
+           (exe (uiop:native-namestring
+                 (uiop:subpathname bundle "Contents/MacOS/fixture"))))
+      (is (notany (lambda (line) (search " OSO " line))
+                  (uiop:split-string (app::run (list "nm" "-ap" exe))
+                                     :separator '(#\Newline))))
+      (is (zerop (nth-value 2 (app::run (list "codesign" "--verify" "--strict"
+                                              (uiop:native-namestring bundle))
+                                        :ignore-error-status t))))
+      (let ((output (run-bundle bundle dir)))
+        (is (search "FIXTURE-OK" output))
+        (is (search "LIB-LINKED" output))))))

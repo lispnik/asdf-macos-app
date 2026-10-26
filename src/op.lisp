@@ -30,6 +30,7 @@
    (extra-plist   :initarg :bundle-info-plist    :initform nil :reader app-extra-plist)
    (resources     :initarg :bundle-resources     :initform nil :reader app-resources)
    (contribs      :initarg :bundle-sbcl-contribs :initform t   :reader app-contribs-p)
+   (strip-runtime :initarg :bundle-strip-runtime :initform nil :reader app-strip-runtime-p)
    (log           :initarg :bundle-log           :initform t   :reader app-log-p)
    (log-max       :initarg :bundle-log-max-bytes :initform 1048576
                   :reader app-log-max-bytes)
@@ -115,6 +116,7 @@ child Lisp performs; it never returns."))
                 (and r (merge-pathnames r (asdf:system-source-directory system))))
      :runtime-frameworks (app-runtime-frameworks system)
      :contribs-p (app-contribs-p system)
+     :strip-runtime-p (app-strip-runtime-p system)
      :log-p (app-log-p system)
      :log-max-bytes (app-log-max-bytes system)
      :foreign-libraries (mapcar (lambda (l)
@@ -653,6 +655,17 @@ which takes a minute that a refusal afterwards would waste."
   (run (runtime-link-command (spec-runtime-frameworks spec) exe))
   (check-build-id exe))
 
+(defun strip-runtime (exe)
+  "Remove the debug map from the runtime at EXE.
+
+SBCL compiles its runtime with -g, and the link records where every object came
+from: about ninety absolute paths into the build tree -- /Users/<you>/... -- in
+each copy of the runtime, so in every bundle shipped.  strip -S takes those and
+nothing else.  The exported symbols stay, and they are what the core resolves
+the runtime's C functions through; the build ID is data and stays too.  The
+bundle is signed afterwards, so the signature strip invalidates is replaced."
+  (run (list "/usr/bin/strip" "-S" (uiop:native-namestring exe))))
+
 (defun install-runtime (spec)
   "Put the SBCL runtime in MacOS/ and link the core beside it.
 
@@ -674,6 +687,8 @@ what lets the runtime find its core with no arguments; see CORE-LINK-PATH."
     ;; -p preserved the runtime's mode, which is read-only in a Homebrew
     ;; install; the copy has to be writable for codesign to sign it in place.
     (run (list "/bin/chmod" "755" (uiop:native-namestring exe)))
+    (when (spec-strip-runtime-p spec)
+      (strip-runtime exe))
     ;; DELETE-FILE unconditionally, errors ignored: a DANGLING symlink is
     ;; invisible to PROBE-FILE but still occupies the name, and ln would fail on
     ;; it.  A rebuild into a reused staging directory is exactly when that

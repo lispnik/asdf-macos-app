@@ -653,6 +653,35 @@ refused before anything is dumped."
           (is (app::check-build-id exe)))
         (signals app:app-build-error (app::check-runtime-choice spec)))))
 
+(deftest a-stripped-runtime-keeps-what-the-core-needs
+  "strip -S takes the debug map -- the build tree's paths -- and leaves the build
+ID and the exported symbols, so the core still starts under it and still finds
+the runtime's C functions."
+  (uiop:with-temporary-file (:pathname exe :keep nil)
+    (uiop:copy-file sb-ext:*runtime-pathname* exe)
+    (app::run (list "/bin/chmod" "755" (uiop:native-namestring exe)))
+    (flet ((debug-map-entries ()
+             (count-if (lambda (line) (search " OSO " line))
+                       (uiop:split-string
+                        (app::run (list "nm" "-ap" (uiop:native-namestring exe)))
+                        :separator '(#\Newline))))
+           (exported ()
+             (app::run (list "nm" "-gU" (uiop:native-namestring exe)))))
+      (let ((before (exported)))
+        (app::strip-runtime exe)
+        (is (zerop (debug-map-entries)))
+        (is (string= before (exported)))
+        (is (app::check-build-id exe))
+        (is (= 7 (nth-value 2
+                   (uiop:run-program
+                    (list (uiop:native-namestring exe)
+                          "--core" (uiop:native-namestring sb-ext:*core-pathname*)
+                          "--noinform" "--non-interactive" "--no-sysinit" "--no-userinit"
+                          "--eval" "(sb-alien:alien-funcall (sb-alien:extern-alien \"getpid\" (function sb-alien:int)))"
+                          "--eval" "(sb-ext:gc :full t)"
+                          "--eval" "(sb-ext:exit :code 7)")
+                    :ignore-error-status t))))))))
+
 (deftest the-bundle-restore-hook-runs-before-the-others
   "A library that reopens its foreign libraries in a restore hook -- im does --
 has to find Contents/Frameworks on CFFI's search path already, so the bundle's
