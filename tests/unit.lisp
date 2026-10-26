@@ -728,3 +728,17 @@ failed in otool, so a library missing, or newer than the core, means a new dump.
         (manifest (list a b))
         (delete-file b)
         (is (not (app::foreign-libraries-current-p manifest later)))))))
+
+(deftest a-core-is-current-only-under-the-sbcl-that-dumped-it
+  "The runtime beside a reused core is the building SBCL's, and a core starts
+only under its own build's runtime.  A core dumped by another SBCL was reused
+anyway, and the bundle quit at launch."
+  (is (app::core-from-this-sbcl-p sb-ext:*core-pathname*))
+  (uiop:with-temporary-file (:pathname other :keep nil)
+    (with-open-file (s other :direction :output :if-exists :supersede
+                             :element-type '(unsigned-byte 8))
+      (write-sequence (make-array 4096 :element-type '(unsigned-byte 8)
+                                       :initial-element 0)
+                      s))
+    (is (not (app::core-from-this-sbcl-p other))))
+  (is (not (app::core-from-this-sbcl-p #p"/nonexistent/sbcl.core"))))

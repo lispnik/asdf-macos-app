@@ -454,8 +454,29 @@ this system has been rebuilt."
                  (foreign-libraries-current-p
                   (uiop:subpathname (spec-final-root spec)
                                     "Contents/Resources/foreign-libraries.sexp")
-                  stamp))
+                  stamp)
+                 (core-from-this-sbcl-p previous))
         previous))))
+
+(defun core-from-this-sbcl-p (core)
+  "Whether CORE was dumped by an SBCL with the running one's build ID.
+
+The runtime put beside a reused core is the building SBCL's, and a core starts
+only under a runtime with its own build ID.  A core dumped by another SBCL --
+Homebrew's, say, where the next build ran under a locally built one -- was
+reused all the same, and the bundle quit at launch without a word.  SBCL writes
+the build ID into the core's header, a few dozen bytes in, so the first page
+or so is all that need be read."
+  (let ((id (running-build-id)))
+    (and id
+         (handler-case
+             (with-open-file (in core :element-type '(unsigned-byte 8))
+               (let ((head (make-array (min (file-length in) 65536)
+                                       :element-type '(unsigned-byte 8))))
+                 (read-sequence head in)
+                 (and (search (map '(vector (unsigned-byte 8)) #'char-code id) head)
+                      t)))
+           (error () nil)))))
 
 (defun foreign-libraries-current-p (manifest stamp)
   "Whether every library MANIFEST lists is still where it was, and no newer
