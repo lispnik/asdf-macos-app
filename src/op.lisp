@@ -449,8 +449,41 @@ this system has been rebuilt."
                                        (format nil "Contents/Resources/~a"
                                                +core-name+)))
            (stamp (uiop:safe-file-write-date previous)))
-      (when (and stamp (> stamp (newest-input-date system)))
+      (when (and stamp
+                 (> stamp (newest-input-date system))
+                 (foreign-libraries-current-p
+                  (uiop:subpathname (spec-final-root spec)
+                                    "Contents/Resources/foreign-libraries.sexp")
+                  stamp))
         previous))))
+
+(defun foreign-libraries-current-p (manifest stamp)
+  "Whether every library MANIFEST lists is still where it was, and no newer
+than STAMP, the date of the core that was dumped with them open.
+
+The core records the paths of the libraries it had open, and they are copied
+into the bundle from those paths.  A Homebrew upgrade removes them: each
+version is installed under its own Cellar directory and the previous one
+deleted, so a reused core named libraries that no longer existed, and the
+build failed in otool.  A library replaced where it stands is caught by its
+date.  No manifest, or one that cannot be read, is not current."
+  (let ((libraries (handler-case
+                       (with-open-file (s manifest :if-does-not-exist nil)
+                         (if s
+                             (with-standard-io-syntax
+                               (let ((*package* (find-package :keyword))
+                                     (*read-eval* nil))
+                                 (read s nil :none)))
+                             :none))
+                     (error () :none))))
+    ;; NIL is a manifest of no libraries, and current.
+    (and (listp libraries)
+         (every (lambda (library)
+                  (and (stringp library)
+                       (let ((date (uiop:safe-file-write-date
+                                    (uiop:parse-native-namestring library))))
+                         (and date (<= date stamp)))))
+                libraries))))
 
 (defun reuse-image (spec previous)
   (let ((core (core-path spec)))

@@ -600,3 +600,32 @@ one replaced -- and the bundle still starts and still finds its dependency."
       (let ((output (run-bundle bundle dir)))
         (is (search "FIXTURE-OK" output))
         (is (search "LIB-LINKED" output))))))
+
+(deftest a-library-rebuilt-since-the-dump-forces-a-new-image
+  "The sources unchanged but a bundled library newer than the core: the core is
+dumped again rather than reused with the old library's record."
+  (with-fixture (dir)
+    (let* ((source (uiop:subpathname dir "libdummy.c"))
+           (dylib (uiop:native-namestring (uiop:subpathname dir "libdummy.dylib"))))
+      (flet ((compile-dylib ()
+               (app::run (list "/usr/bin/cc" "-dynamiclib" "-o" dylib
+                               (uiop:native-namestring source)))))
+        (with-open-file (s source :direction :output :if-exists :supersede)
+          (write-line "int dummy(void) { return 42; }" s))
+        (compile-dylib)
+        (replace-in-file (fixture-asd dir)
+                         ":bundle-log t"
+                         (format nil ":bundle-log t :bundle-foreign-libraries (~s)" dylib))
+        (clear-fixture-systems)
+        (sleep 1.1)                     ; file-write-date is second-granular
+        (build-fixture)
+        (sleep 1.1)
+        (multiple-value-bind (bundle output) (build-fixture)
+          (declare (ignore bundle))
+          (is (search "reusing" output)))
+        (sleep 1.1)
+        (compile-dylib)
+        (multiple-value-bind (bundle output) (build-fixture)
+          (is (search "dumping image" output))
+          (is (not (search "reusing" output)))
+          (is (probe-file (uiop:subpathname bundle "Contents/Frameworks/libdummy.dylib"))))))))

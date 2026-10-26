@@ -696,3 +696,35 @@ hook is the first to run, however many were registered before or after it."
       (is (= 1 (count 'app::%bundle-restore-hook order)))
       (is (equal '(registered-early registered-late registered-at-the-dump)
                  (rest order))))))
+
+(deftest a-core-is-current-only-while-its-libraries-are
+  "A reused core names the libraries it had open, and the bundle copies them
+from those paths.  After a Homebrew upgrade the paths were gone and the build
+failed in otool, so a library missing, or newer than the core, means a new dump."
+  (with-fake-libs (dir "lib/liba.dylib" "lib/libb.dylib" "manifest.sexp")
+    (let* ((manifest (uiop:subpathname dir "manifest.sexp"))
+           (a (uiop:native-namestring (uiop:subpathname dir "lib/liba.dylib")))
+           (b (uiop:native-namestring (uiop:subpathname dir "lib/libb.dylib")))
+           (later (+ (get-universal-time) 60)))
+      (flet ((manifest (form)
+               ;; As WRITE-FOREIGN-MANIFEST writes it: from the keyword
+               ;; package, so the namestrings' BASE-CHAR comes back as CL's.
+               (with-open-file (s manifest :direction :output :if-exists :supersede)
+                 (with-standard-io-syntax
+                   (let ((*package* (find-package :keyword)))
+                     (prin1 form s))))))
+        (manifest (list a b))
+        (is (app::foreign-libraries-current-p manifest later))
+        ;; Older than a library: it changed after the dump.
+        (is (not (app::foreign-libraries-current-p manifest (- (get-universal-time) 60))))
+        ;; No libraries at all is current; no manifest, or nonsense, is not.
+        (manifest '())
+        (is (app::foreign-libraries-current-p manifest later))
+        (manifest :garbage)
+        (is (not (app::foreign-libraries-current-p manifest later)))
+        (is (not (app::foreign-libraries-current-p
+                  (uiop:subpathname dir "absent.sexp") later)))
+        ;; One gone: what a Homebrew upgrade does.
+        (manifest (list a b))
+        (delete-file b)
+        (is (not (app::foreign-libraries-current-p manifest later)))))))

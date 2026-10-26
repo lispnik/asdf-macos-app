@@ -25,6 +25,12 @@ $ sbcl --eval '(asdf:make "editor")' --quit
 
 Or from Lisp: `(macos-app:make-app "editor")`.
 
+A second build reuses the core of the first (`; image is current, reusing it`)
+while it is newer than every source in the system's dependency closure, and
+every foreign library it had open is still where it was and no newer than it.
+A library moved or replaced, as by `brew upgrade`, means a fresh dump.
+`(macos-app:make-app "editor" :force-image t)` always dumps.
+
 [**utc-status**](https://github.com/lispnik/utc-status-app) is built this way
 and ships with it: a menu-bar clock whose
 [release](https://github.com/lispnik/utc-status-app/releases) is a signed,
