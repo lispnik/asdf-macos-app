@@ -90,7 +90,11 @@ No C launcher, and so still no C toolchain in the build.
 `Contents/Frameworks`, its *own* dependencies are rewritten to
 `@loader_path/<name>`, and at startup the runtime pushes
 `Contents/Frameworks/` onto `cffi:*foreign-library-directories*`. CFFI then
-resolves libraries to absolute paths inside the bundle.
+resolves libraries to absolute paths inside the bundle. It does this in a UIOP
+image restore hook that runs before every other one, so a library that closes
+its foreign libraries before the dump and reopens them in a restore hook of
+its own (`im` does) finds the bundle's copies, not those in CFFI's default
+directories such as `/opt/homebrew/lib`.
 
 **A library that is open when the image is dumped is reopened from the
 bundle.** SBCL reopens such a library itself at startup, before any Lisp of

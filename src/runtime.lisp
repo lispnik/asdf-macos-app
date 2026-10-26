@@ -89,6 +89,32 @@ finds nothing, and REQUIRE has nowhere to look."
     (when (and home (uiop:directory-exists-p (uiop:subpathname home "contrib/")))
       (setf sb-sys::*sbcl-homedir-pathname* home))))
 
+;;; The bundle's paths, before anything else restores ---------------------------
+;;;
+;;; Libraries that close their foreign libraries before the dump and reopen them
+;;; in a restore hook -- im does, so the saved image records none of them -- do
+;;; it before the toplevel runs.  If Contents/Frameworks is only added to CFFI's
+;;; search path in the toplevel, such a library is reopened from CFFI's default
+;;; directories instead: /opt/homebrew/lib on a Mac with Homebrew, which leaves
+;;; the process with Homebrew's copy beside the bundle's, and nothing at all on
+;;; a Mac without it.  So the bundle's paths are set up in a restore hook of
+;;; their own, put where it runs before every other one.
+
+(defun %bundle-restore-hook ()
+  "Find the bundle, put Contents/Frameworks first on CFFI's search path, and
+make Contents/Resources/sbcl/ SBCL's home.  Runs first of the restore hooks."
+  (setf *bundle-root* (locate-bundle-root))
+  (register-foreign-directory)
+  (use-bundled-contribs))
+
+(defun install-bundle-restore-hook ()
+  "Make %BUNDLE-RESTORE-HOOK the first restore hook to run.  UIOP runs them in
+the order they were registered, the reverse of the list, so it goes last in the
+list; called just before the dump, when every other hook is registered."
+  (setf uiop:*image-restore-hook*
+        (append (remove '%bundle-restore-hook uiop:*image-restore-hook*)
+                (list '%bundle-restore-hook))))
+
 (defparameter +log-override-variable+ "MACOS_APP_LOG"
   "Environment variable that redirects the app's log. Useful for debugging a
 shipped bundle, and for tests that must not write to the real home directory.")
@@ -119,11 +145,11 @@ shipped bundle, and for tests that must not write to the real home directory.")
 (defun %app-toplevel ()
   "The dumped image's entry point. Sets up the bundle environment, then
 calls the user's entry point."
-  (setf *bundle-root* (locate-bundle-root))
+  ;; Done already by %BUNDLE-RESTORE-HOOK, and again in case something
+  ;; removed it from the restore hooks; each step is idempotent.
+  (%bundle-restore-hook)
   ;; Finder launches with cwd = /
   (setf *default-pathname-defaults* (user-homedir-pathname))
-  (register-foreign-directory)
-  (use-bundled-contribs)
   (let ((log (and *log-to-file* (running-in-bundle-p) (app-log-file))))
     (flet ((go! ()
              (setf uiop:*command-line-arguments*

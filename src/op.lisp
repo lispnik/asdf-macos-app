@@ -510,6 +510,9 @@ this system has been rebuilt."
     ;; returning toplevel drops into the REPL instead of exiting.
     (setf uiop:*image-entry-point* '%app-toplevel
           uiop:*lisp-interaction* nil)
+    ;; Before the restore hooks the application's libraries registered, which
+    ;; may reopen foreign libraries and must find the bundle's copies.
+    (install-bundle-restore-hook)
     ;; A CORE, not an executable, and this is the decision the whole design
     ;; turns on.  SAVE-LISP-AND-DIE :EXECUTABLE T appends the core to the SBCL
     ;; runtime's Mach-O -- past the end of __LINKEDIT and past the code

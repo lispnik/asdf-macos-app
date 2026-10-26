@@ -652,3 +652,18 @@ refused before anything is dumped."
                       (app::run (list "otool" "-L" (uiop:native-namestring exe)))))
           (is (app::check-build-id exe)))
         (signals app:app-build-error (app::check-runtime-choice spec)))))
+
+(deftest the-bundle-restore-hook-runs-before-the-others
+  "A library that reopens its foreign libraries in a restore hook -- im does --
+has to find Contents/Frameworks on CFFI's search path already, so the bundle's
+hook is the first to run, however many were registered before or after it."
+  (let ((uiop:*image-restore-hook* (list 'registered-late 'registered-early)))
+    (app::install-bundle-restore-hook)
+    (uiop:register-image-restore-hook 'registered-at-the-dump nil)
+    (app::install-bundle-restore-hook)
+    ;; UIOP calls them in the reverse of the list.
+    (let ((order (reverse uiop:*image-restore-hook*)))
+      (is (eq 'app::%bundle-restore-hook (first order)))
+      (is (= 1 (count 'app::%bundle-restore-hook order)))
+      (is (equal '(registered-early registered-late registered-at-the-dump)
+                 (rest order))))))
